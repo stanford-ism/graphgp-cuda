@@ -1,5 +1,5 @@
-from .ffi import _register, refine_static, query_coarse_neighbors
+from .primitive import _initialize, refine, query_coarse_neighbors
 
-_register()
+_initialize()
 
-__all__ = ["refine_static", "query_coarse_neighbors"]
+__all__ = ["refine", "query_coarse_neighbors"]

@@ -17,6 +17,26 @@ __forceinline__ __device__ float dot(
     return sum;
 }
 
+// multiply C = A B
+template <int n, int p, int m>
+__forceinline__ __device__ void matmul(
+    const float* A, // (n, p)
+    const float* B, // (p, m)
+    float* C // (n, m)
+) {
+    #pragma unroll
+    for (int i = 0; i < n; ++i) {
+        #pragma unroll
+        for (int j = 0; j < m; ++j) {
+            C[i * m + j] = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < p; ++k) {
+                C[i * m + j] += A[i * p + k] * B[k * m + j];
+            }
+        }
+    }
+}
+
 // compute the Cholesky decomposition L L.T = A
 template <int n>
 __forceinline__ __device__ void cholesky(
