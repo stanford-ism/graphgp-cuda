@@ -8,7 +8,7 @@
 #include <cstdint>
 
 #include "refine.h"
-#include "refine_transpose.h"
+#include "refine_transpose_reduce.h"
 #include "neighbors.h"
 
 namespace ffi = xla::ffi;

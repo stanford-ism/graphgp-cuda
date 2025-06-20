@@ -4,6 +4,12 @@
 #include <cmath>
 #include <cuda_runtime.h>
 
+__global__ void add_to_indices(const float *a, const uint32_t *indices, float *out, size_t n) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n) return;
+    out[indices[tid]] += a[tid];
+}
+
 __forceinline__ __device__ size_t searchsorted(const float* a, float v, size_t n) {
     size_t left = 0;
     size_t right = n;

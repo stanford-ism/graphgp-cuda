@@ -7,13 +7,16 @@
 #include "linalg.h"
 #include "covariance.h"
 
-template <int K_COARSE, int N_DIM>  
+#include <cub/cub.cuh>
+
+template <int K_COARSE, int N_DIM>
 __global__ void refine_transpose_kernel(
     const float *points, // (N, d)
     const uint32_t *neighbors, // (N, k)
     const float *cov_r, // (R,)
     const float *cov, // (R,)
-    float *values_tangent, // (N,)
+    const float *values_tangent, // (N,)
+    float *temp_val, // (N, k)
     float *xi_tangent, // (N,)
     size_t n_cov,
     size_t start_idx,
@@ -65,7 +68,8 @@ __global__ void refine_transpose_kernel(
 
     // add to values_tangent (multiple threads may write to the same index)
     for (int i = 0; i < K_COARSE; ++i) {
-        atomicAdd(values_tangent + neighbors[idx * K_COARSE + i], vec1[i]);
+        // atomicAdd(values_tangent + neighbors[idx * K_COARSE + i], vec1[i]);
+        temp_val[idx * K_COARSE + i] = vec1[i];
     }
 }
 
@@ -96,9 +100,11 @@ __host__ void refine_transpose(
     // fill xi_tangent with zeros for initial level
     cudaMemsetAsync(xi_tangent, 0, level_offsets_host[0] * sizeof(float), stream);
 
-    // allocate temporary buffer for propagating values_tangent
+    // allocate temporary buffers for propagating values_tangent
     float *final_values_tangent;
+    float *temp_val;
     cudaMalloc(&final_values_tangent, n_points * sizeof(float));
+    cudaMalloc(&temp_val, n_points * K_COARSE * sizeof(float));
     cudaMemcpyAsync(final_values_tangent, values_tangent, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // walk backwards through levels and compute tangents
@@ -109,14 +115,62 @@ __host__ void refine_transpose(
         n_threads = end_idx - start_idx;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
         refine_transpose_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, neighbors, cov_r, cov, final_values_tangent, xi_tangent, n_cov, start_idx, 0, n_threads
+            points, neighbors, cov_r, cov, final_values_tangent, temp_val, xi_tangent, n_cov, start_idx, n_threads
         );
+
+        // make sort destination arrays
+        float *sorted_val;
+        uint32_t *sorted_idx;
+        cudaMalloc(&sorted_val, n_threads * K_COARSE * sizeof(float));
+        cudaMalloc(&sorted_idx, n_threads * K_COARSE * sizeof(uint32_t));
+
+        // sort by index
+        void *temp_storage = nullptr;
+        size_t temp_storage_bytes = 0;
+        size_t start_shift = start_idx * K_COARSE;
+        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_bytes, neighbors + start_shift, sorted_idx, temp_val + start_shift, sorted_val, n_threads * K_COARSE, 0, sizeof(uint32_t) * 8, stream);
+        cudaMalloc(&temp_storage, temp_storage_bytes);
+        cub::DeviceRadixSort::SortPairs(temp_storage, temp_storage_bytes, neighbors + start_shift, sorted_idx, temp_val + start_shift, sorted_val, n_threads * K_COARSE, 0, sizeof(uint32_t) * 8, stream);
+
+        // make reduction destination arrays
+        float *idx_val;
+        uint32_t *unique_idx;
+        size_t *n_unique;
+        cudaMalloc(&idx_val, n_points * sizeof(float));
+        cudaMalloc(&unique_idx, n_points * sizeof(uint32_t));
+        cudaMalloc(&n_unique, sizeof(size_t));
+
+        // reduce by key
+        void *temp_storage_reduction = nullptr;
+        size_t temp_storage_reduction_bytes = 0;
+        cub::DeviceReduce::ReduceByKey(temp_storage_reduction, temp_storage_reduction_bytes, sorted_idx, unique_idx, sorted_val, idx_val, n_unique, cub::Sum(), n_threads * K_COARSE, stream);
+        cudaMalloc(&temp_storage_reduction, temp_storage_reduction_bytes);
+        cub::DeviceReduce::ReduceByKey(temp_storage_reduction, temp_storage_reduction_bytes, sorted_idx, unique_idx, sorted_val, idx_val, n_unique, cub::Sum(), n_threads * K_COARSE, stream);
+
+        // copy reduced values back to final_values_tangent
+        cudaStreamSynchronize(stream);
+        cudaMemcpy(&n_threads, n_unique, sizeof(size_t), cudaMemcpyDeviceToHost);
+        n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
+        add_to_indices<<<n_blocks, threads_per_block, 0, stream>>>(
+            idx_val, unique_idx, final_values_tangent, n_threads
+        );
+
+        cudaStreamSynchronize(stream);
+        cudaFree(idx_val);
+        cudaFree(unique_idx);
+        cudaFree(n_unique);
+        cudaFree(sorted_val);
+        cudaFree(sorted_idx);
+        cudaFree(temp_storage_reduction);
+        cudaFree(temp_storage);
     }
 
     // copy final values_tangent back to initial_values_tangent
     cudaMemcpyAsync(initial_values_tangent, final_values_tangent, level_offsets_host[0] * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // free
-    cudaFreeAsync(final_values_tangent, stream);
+    cudaStreamSynchronize(stream);
+    cudaFree(final_values_tangent);
+    cudaFree(temp_val);
     free(level_offsets_host);
 }
