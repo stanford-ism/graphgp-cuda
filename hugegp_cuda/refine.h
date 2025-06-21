@@ -29,8 +29,7 @@ __global__ void refine_kernel(
     float neighbor_points[K_COARSE * N_DIM];
     float vec1[K_COARSE];
     float vec2[K_COARSE];
-    float mat1[K_COARSE * K_COARSE];
-    float mat2[K_COARSE * K_COARSE];
+    float mat1[(K_COARSE * (K_COARSE + 1)) / 2]; // lower triangular matrix for covariance
 
     // load fine point, coarse points, and coarse values
     #pragma unroll
@@ -48,15 +47,16 @@ __global__ void refine_kernel(
     }
 
     // compute conditional mean
-    compute_cov_lookup_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
-    cholesky<K_COARSE>(mat1, mat2); // L
-    solve_cholesky<K_COARSE>(mat2, vec1, vec2); // Kcc^-1 @ v
-    compute_cov_lookup_matrix<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec1, n_cov); // Kfc
-    float mean = dot<K_COARSE>(vec1, vec2); // Kfc @ (Kcc^-1 @ v)
+    cov_lookup_matrix_triangular<K_COARSE, N_DIM>(neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
+    cholesky<K_COARSE>(mat1); // L
+    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ v
+    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec2, n_cov); // Kfc
+    float mean = dot<K_COARSE>(vec2, vec1); // Kfc @ (Kcc^-1 @ v)
 
     // compute conditional variance
-    float variance = test_cov(0.0f); // Kff
-    solve_cholesky<K_COARSE>(mat2, vec1, vec2); // Kcc^-1 @ Kfc
+    float variance = cov_lookup(0.0f, cov_bins, cov_vals, n_cov); // Kff
+    vec_copy<K_COARSE>(vec2, vec1); // Kcf = Kfc
+    solve_cholesky<K_COARSE, 1>(mat1, vec2); // Kcc^-1 @ Kfc
     variance -= dot<K_COARSE>(vec1, vec2); // Kff - Kcf @ (Kcc^-1 @ Kfc)
     variance = fmaxf(variance, 0.0f); // ensure non-negative variance
 

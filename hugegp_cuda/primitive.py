@@ -9,8 +9,6 @@ from jax.core import ShapedArray
 from jax.extend.core import Primitive
 from jax.interpreters import mlir, ad
 
-import numpy as np
-
 # Define custom primitive, the "refine" function is exposed
 refine_p = Primitive("hugegp_cuda_refine")
 

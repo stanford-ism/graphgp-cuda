@@ -4,6 +4,10 @@
 #include <cmath>
 #include <cuda_runtime.h>
 
+__forceinline__ __device__ int tri(int i, int j) {
+    return (i * (i + 1)) / 2 + j;
+}
+
 __global__ void add_to_indices(const float *a, const uint32_t *indices, float *out, size_t n) {
     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n) return;

@@ -29,8 +29,7 @@ __global__ void refine_transpose_kernel(
     float neighbor_points[K_COARSE * N_DIM];
     float vec1[K_COARSE];
     float vec2[K_COARSE];
-    float mat1[K_COARSE * K_COARSE];
-    float mat2[K_COARSE * K_COARSE];
+    float mat1[(K_COARSE * (K_COARSE + 1)) / 2];
 
     // load fine point and coarse points
     #pragma unroll
@@ -48,13 +47,12 @@ __global__ void refine_transpose_kernel(
 
     // compute conditional variance
     float variance = test_cov(0.0f); // Kff
-    compute_cov_lookup_matrix<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec1, n_cov); // Kfc
-    compute_cov_lookup_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
-    // compute_test_cov_matrix<K_COARSE, 1, N_DIM>(neighbor_points, fine_point, vec1); // Kcf
-    // compute_test_cov_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, mat1); // Kcc
-    cholesky<K_COARSE>(mat1, mat2); // L
-    solve_cholesky<K_COARSE>(mat2, vec1, vec2); // Kcc^-1 @ Kfc, must recompute in this order for stability
-    variance -= dot<K_COARSE>(vec1, vec2); // Kff - Kcf @ (Kcc^-1 @ Kfc)
+    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec1, n_cov); // Kfc
+    vec_copy<K_COARSE>(vec1, vec2); // Kcf = Kfc
+    cov_lookup_matrix_triangular<K_COARSE, N_DIM>(neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
+    cholesky<K_COARSE>(mat1); // L
+    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ Kfc
+    variance -= dot<K_COARSE>(vec2, vec1); // Kff - Kcf @ (Kcc^-1 @ Kfc)
     variance = fmaxf(variance, 0.0f); // ensure non-negative variance
 
     // write to xi_tangent
@@ -62,8 +60,8 @@ __global__ void refine_transpose_kernel(
 
     // compute addition to values_tangent
     const float *fine_value_tangent = values_tangent + idx;
-    matmul<K_COARSE, 1, 1>(vec1, fine_value_tangent, vec2); // Kcf @ vt
-    solve_cholesky<K_COARSE>(mat2, vec2, vec1); // Kcc^-1 @ (Kcf @ vt)
+    matmul<K_COARSE, 1, 1>(vec2, fine_value_tangent, vec1); // Kcf @ vt
+    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ (Kcf @ vt)
 
     // add to values_tangent (multiple threads may write to the same index)
     for (int i = 0; i < K_COARSE; ++i) {
@@ -103,8 +101,7 @@ __host__ void refine_transpose(
     cudaMemcpyAsync(initial_values_tangent, values_tangent, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // walk backwards through levels and compute tangents
-    for (size_t i = 0; i < n_levels; ++i) {
-        size_t level = n_levels - 1 - i;
+    for (size_t level = n_levels; level-- > 0;) {
         uint32_t start_idx = offsets_host[level];
         uint32_t end_idx = (level + 1 < n_levels) ? offsets_host[level + 1] : n_points;
         n_threads = end_idx - start_idx;
