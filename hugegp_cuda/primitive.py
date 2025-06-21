@@ -3,7 +3,6 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-from jax.tree_util import Partial
 
 from jax import lax
 from jax.core import ShapedArray
@@ -42,19 +41,19 @@ def _initialize():
     ad.primitive_jvps[refine_p] = refine_value_and_jvp
     ad.primitive_transposes[refine_p] = refine_transpose
 
-def refine(points, xi, neighbors, level_offsets, initial_values, cov_r, cov):
-    return refine_p.bind(points, xi, neighbors, level_offsets, initial_values, cov_r, cov)
+def refine(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi):
+    return refine_p.bind(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi)
 
-def refine_impl(points, xi, neighbors, level_offsets, initial_values, cov_r, cov):
+def refine_impl(*args):
     values = jax.ffi.ffi_call(
         "hugegp_cuda_refine_xla",
-        jax.ShapeDtypeStruct(xi.shape, jnp.float32),  # xi is the second argument
-    )(points, xi, neighbors, level_offsets, initial_values, cov_r, cov)
+        jax.ShapeDtypeStruct(args[6].shape, jnp.float32),
+    )(*args)
     return values
 
 
 def refine_abstract_eval(*args):
-    return ShapedArray(args[1].shape, dtype=jnp.float32)  # xi is the second argument
+    return ShapedArray(args[6].shape, dtype=jnp.float32)
 
 
 def refine_lowering(ctx, *args):
@@ -62,40 +61,41 @@ def refine_lowering(ctx, *args):
 
 
 def refine_value_and_jvp(primals, tangents):
-    p, x, n, lo, iv, cr, c = primals
-    dp, dx, dn, dlo, div, dcr, dc = tangents
+    p, o, n, cb, cv, iv, x = primals
+    dp, do, dn, dcb, dcv, div, dx = tangents
 
-    if not all(type(t) is ad.Zero for t in [dp, dn, dlo, dcr, dc]):
+    if not all(type(t) is ad.Zero for t in [dp, dn, do, dcb, dcv]):
         raise NotImplementedError("Differentiation only supported for xi and initial_values.")
 
-    if type(dx) is ad.Zero:
-        dx = lax.zeros_like_array(x)
     if type(div) is ad.Zero:
         div = lax.zeros_like_array(iv)
+    if type(dx) is ad.Zero:
+        dx = lax.zeros_like_array(x)
 
     primals_out = refine(*primals)
-    tangents_out = refine(p, dx, n, lo, div, cr, c)
+    tangents_out = refine(p, o, n, cb, cv, div, dx)
     return primals_out, tangents_out
 
 
 def refine_transpose(tangents_out, *primals):
-    p, x, n, lo, iv, cr, c = primals
+    p, o, n, cb, cv, iv, x = primals
     dv = tangents_out
 
-    if any(ad.is_undefined_primal(t) for t in [p, n, lo, cr, c]):
+    if any(ad.is_undefined_primal(t) for t in [p, o, n, cb, cv]):
         raise NotImplementedError("Differentiation only supported for xi and initial_values.")
 
     if not all(ad.is_undefined_primal(t) for t in [x, iv]):
         raise NotImplementedError("Not differentiated with respect to xi and initial_values?")
 
-    dx, div = jax.ffi.ffi_call(
+    div, dx = jax.ffi.ffi_call(
         "hugegp_cuda_refine_transpose_xla",
         (
+            jax.ShapeDtypeStruct((len(p),), jnp.float32), # div is used as a temporary buffer, then we slice
             jax.ShapeDtypeStruct((len(p),), jnp.float32),
-            jax.ShapeDtypeStruct((lo[0],), jnp.float32),
         ),
-    )(p, n, lo, cr, c, dv)
-    return None, dx, None, None, div, None, None
+    )(p, o, n, cb, cv, dv)
+    div = div[:o[0]]
+    return None, None, None, None, None, div, dx
 
 
 def query_coarse_neighbors(points, split_dims, k):
@@ -103,5 +103,5 @@ def query_coarse_neighbors(points, split_dims, k):
         "hugegp_cuda_query_coarse_neighbors_xla",
         jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
     )
-    neighbors = call(points, split_dims, k=np.int32(k))
+    neighbors = call(points, split_dims)
     return neighbors

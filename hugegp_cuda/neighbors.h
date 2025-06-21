@@ -27,8 +27,8 @@ __forceinline__ __device__ void query_coarse_neighbors_impl(
     const float* points, // (N, d)
     const int8_t* split_dims, // (N,)
     uint32_t* neighbors_out, // (N, k) output buffer
-    int k, // number of neighbors to find
-    size_t query_index // index of the query point
+    size_t query_index, // index of the query point
+    int k // number of neighbors to find
 ) {
 
     // compute number of points in levels above query
@@ -105,12 +105,12 @@ __global__ void query_coarse_neighbors_kernel(
     const float* points,
     const int8_t* split_dims,
     uint32_t* neighbors,
-    int k,
-    size_t n_points
+    size_t n_points,
+    int k
 ) {
     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_points) return;
-    query_coarse_neighbors_impl<MAX_K, N_DIM>(points, split_dims, neighbors, k, tid);
+    query_coarse_neighbors_impl<MAX_K, N_DIM>(points, split_dims, neighbors, tid, k);
 }
 
 template <int MAX_K, int N_DIM>
@@ -119,13 +119,13 @@ __host__ void query_coarse_neighbors(
     const float* points,
     const int8_t* split_dims,
     uint32_t* neighbors,
-    int k,
-    size_t n_points
+    size_t n_points,
+    int k
 ) {
     size_t n_threads = n_points;
     size_t threads_per_block = 256;
     size_t n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
     query_coarse_neighbors_kernel<MAX_K, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-        points, split_dims, neighbors, k, n_points
+        points, split_dims, neighbors, n_points, k
     );
 }

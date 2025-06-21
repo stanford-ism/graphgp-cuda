@@ -11,8 +11,8 @@ template <int K_COARSE, int N_DIM>
 __global__ void refine_transpose_kernel(
     const float *points, // (N, d)
     const uint32_t *neighbors, // (N, k)
-    const float *cov_r, // (R,)
-    const float *cov, // (R,)
+    const float *cov_bins, // (R,)
+    const float *cov_vals, // (R,)
     float *values_tangent, // (N,)
     float *xi_tangent, // (N,)
     size_t n_cov,
@@ -48,10 +48,12 @@ __global__ void refine_transpose_kernel(
 
     // compute conditional variance
     float variance = test_cov(0.0f); // Kff
-    compute_test_cov_matrix<K_COARSE, 1, N_DIM>(neighbor_points, fine_point, vec1); // Kcf
-    compute_test_cov_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, mat1); // Kcc
+    compute_cov_lookup_matrix<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec1, n_cov); // Kfc
+    compute_cov_lookup_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
+    // compute_test_cov_matrix<K_COARSE, 1, N_DIM>(neighbor_points, fine_point, vec1); // Kcf
+    // compute_test_cov_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, mat1); // Kcc
     cholesky<K_COARSE>(mat1, mat2); // L
-    solve_cholesky<K_COARSE>(mat2, vec1, vec2); // Kcc^-1 @ Kfc, must recompute is this order for stability
+    solve_cholesky<K_COARSE>(mat2, vec1, vec2); // Kcc^-1 @ Kfc, must recompute in this order for stability
     variance -= dot<K_COARSE>(vec1, vec2); // Kff - Kcf @ (Kcc^-1 @ Kfc)
     variance = fmaxf(variance, 0.0f); // ensure non-negative variance
 
@@ -73,13 +75,13 @@ template <int K_COARSE, int N_DIM>
 __host__ void refine_transpose(
     cudaStream_t stream,
     const float *points,
+    const uint32_t *offsets,
     const uint32_t *neighbors,
-    const uint32_t *level_offsets,
-    const float *cov_r,
-    const float *cov,
+    const float *cov_bins,
+    const float *cov_vals,
     const float *values_tangent,
-    float *xi_tangent,
     float *initial_values_tangent,
+    float *xi_tangent,
     size_t n_points,
     size_t n_levels,
     size_t n_cov
@@ -88,35 +90,29 @@ __host__ void refine_transpose(
     size_t threads_per_block = 256;
     size_t n_blocks;
 
-    // copy level offsets to host
-    uint32_t *level_offsets_host = (uint32_t*) malloc(n_levels * sizeof(uint32_t));
-    if (level_offsets_host == nullptr) throw std::runtime_error("Host memory allocation failed");
-    cudaMemcpy(level_offsets_host, level_offsets, n_levels * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    // copy offsets to host
+    uint32_t *offsets_host;
+    offsets_host = (uint32_t*)malloc(n_levels * sizeof(uint32_t));
+    if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
+    cudaMemcpy(offsets_host, offsets, n_levels * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
     // fill xi_tangent with zeros for initial level
-    cudaMemsetAsync(xi_tangent, 0, level_offsets_host[0] * sizeof(float), stream);
+    cudaMemsetAsync(xi_tangent, 0, offsets_host[0] * sizeof(float), stream);
 
-    // allocate temporary buffer for propagating values_tangent
-    float *final_values_tangent;
-    cudaMalloc(&final_values_tangent, n_points * sizeof(float));
-    cudaMemcpyAsync(final_values_tangent, values_tangent, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    // copy tangents, using initial_values_tangent as a temporary buffer, so it should actually be length n_points
+    cudaMemcpyAsync(initial_values_tangent, values_tangent, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // walk backwards through levels and compute tangents
     for (size_t i = 0; i < n_levels; ++i) {
         size_t level = n_levels - 1 - i;
-        size_t start_idx = level_offsets_host[level];
-        size_t end_idx = (level + 1 < n_levels) ? level_offsets_host[level + 1] : n_points;
+        uint32_t start_idx = offsets_host[level];
+        uint32_t end_idx = (level + 1 < n_levels) ? offsets_host[level + 1] : n_points;
         n_threads = end_idx - start_idx;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
         refine_transpose_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, neighbors, cov_r, cov, final_values_tangent, xi_tangent, n_cov, start_idx, 0, n_threads
+            points, neighbors, cov_bins, cov_vals, initial_values_tangent, xi_tangent, n_cov, start_idx, n_threads
         );
     }
 
-    // copy final values_tangent back to initial_values_tangent
-    cudaMemcpyAsync(initial_values_tangent, final_values_tangent, level_offsets_host[0] * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-
-    // free
-    cudaFreeAsync(final_values_tangent, stream);
-    free(level_offsets_host);
+    free(offsets_host);
 }

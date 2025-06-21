@@ -13,8 +13,8 @@ template <int K_COARSE, int N_DIM>
 __global__ void refine_transpose_kernel(
     const float *points, // (N, d)
     const uint32_t *neighbors, // (N, k)
-    const float *cov_r, // (R,)
-    const float *cov, // (R,)
+    const float *cov_bins, // (R,)
+    const float *cov_vals, // (R,)
     const float *values_tangent, // (N,)
     float *temp_val, // (N, k)
     float *xi_tangent, // (N,)
@@ -77,13 +77,13 @@ template <int K_COARSE, int N_DIM>
 __host__ void refine_transpose(
     cudaStream_t stream,
     const float *points,
+    const uint32_t *offsets,
     const uint32_t *neighbors,
-    const uint32_t *level_offsets,
-    const float *cov_r,
-    const float *cov,
+    const float *cov_bins,
+    const float *cov_vals,
     const float *values_tangent,
-    float *xi_tangent,
     float *initial_values_tangent,
+    float *xi_tangent,
     size_t n_points,
     size_t n_levels,
     size_t n_cov
@@ -92,30 +92,31 @@ __host__ void refine_transpose(
     size_t threads_per_block = 256;
     size_t n_blocks;
 
-    // copy level offsets to host
-    uint32_t *level_offsets_host = (uint32_t*) malloc(n_levels * sizeof(uint32_t));
-    if (level_offsets_host == nullptr) throw std::runtime_error("Host memory allocation failed");
-    cudaMemcpy(level_offsets_host, level_offsets, n_levels * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-
     // fill xi_tangent with zeros for initial level
-    cudaMemsetAsync(xi_tangent, 0, level_offsets_host[0] * sizeof(float), stream);
+    size_t n_initial;
+    cudaMemcpy(&n_initial, offsets, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    cudaMemsetAsync(xi_tangent, 0, n_initial * sizeof(float), stream);
 
     // allocate temporary buffers for propagating values_tangent
-    float *final_values_tangent;
+    float *values_tangent_buffer;
     float *temp_val;
-    cudaMalloc(&final_values_tangent, n_points * sizeof(float));
+    cudaMalloc(&values_tangent_buffer, n_points * sizeof(float));
     cudaMalloc(&temp_val, n_points * K_COARSE * sizeof(float));
-    cudaMemcpyAsync(final_values_tangent, values_tangent, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(values_tangent_buffer, values_tangent, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // walk backwards through levels and compute tangents
     for (size_t i = 0; i < n_levels; ++i) {
         size_t level = n_levels - 1 - i;
-        size_t start_idx = level_offsets_host[level];
-        size_t end_idx = (level + 1 < n_levels) ? level_offsets_host[level + 1] : n_points;
+        uint32_t start_idx;
+        uint32_t end_idx = n_points;
+        cudaMemcpy(&start_idx, offsets + level, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        if (level + 1 < n_levels) {
+            cudaMemcpy(&end_idx, offsets + (level + 1), sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        }
         n_threads = end_idx - start_idx;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
         refine_transpose_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, neighbors, cov_r, cov, final_values_tangent, temp_val, xi_tangent, n_cov, start_idx, n_threads
+            points, neighbors, cov_r, cov, values_tangent_buffer, temp_val, xi_tangent, n_cov, start_idx, n_threads
         );
 
         // make sort destination arrays
@@ -152,7 +153,7 @@ __host__ void refine_transpose(
         cudaMemcpy(&n_threads, n_unique, sizeof(size_t), cudaMemcpyDeviceToHost);
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
         add_to_indices<<<n_blocks, threads_per_block, 0, stream>>>(
-            idx_val, unique_idx, final_values_tangent, n_threads
+            idx_val, unique_idx, values_tangent_buffer, n_threads
         );
 
         cudaStreamSynchronize(stream);
@@ -166,11 +167,10 @@ __host__ void refine_transpose(
     }
 
     // copy final values_tangent back to initial_values_tangent
-    cudaMemcpyAsync(initial_values_tangent, final_values_tangent, level_offsets_host[0] * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(initial_values_tangent, values_tangent_buffer, offsets_host[0] * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // free
     cudaStreamSynchronize(stream);
-    cudaFree(final_values_tangent);
+    cudaFree(values_tangent_buffer);
     cudaFree(temp_val);
-    free(level_offsets_host);
 }

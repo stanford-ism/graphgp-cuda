@@ -10,10 +10,10 @@
 template <int K_COARSE, int N_DIM>
 __global__ void refine_kernel(
     const float* points, // (N, d)
-    const float* xi, // (N,)
     const uint32_t* neighbors, // (N, k)
-    const float* cov_r, // (R,)
-    const float* cov, // (R,)
+    const float* cov_bins, // (R,)
+    const float* cov_vals, // (R,)
+    const float* xi, // (N,)
     float* values, // (N,)
     size_t n_cov,
     size_t start_idx,
@@ -48,10 +48,10 @@ __global__ void refine_kernel(
     }
 
     // compute conditional mean
-    compute_test_cov_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, mat1); // Kcc
+    compute_cov_lookup_matrix<K_COARSE, K_COARSE, N_DIM>(neighbor_points, neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
     cholesky<K_COARSE>(mat1, mat2); // L
     solve_cholesky<K_COARSE>(mat2, vec1, vec2); // Kcc^-1 @ v
-    compute_test_cov_matrix<1, K_COARSE, N_DIM>(fine_point, neighbor_points, vec1); // Kfc
+    compute_cov_lookup_matrix<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec1, n_cov); // Kfc
     float mean = dot<K_COARSE>(vec1, vec2); // Kfc @ (Kcc^-1 @ v)
 
     // compute conditional variance
@@ -68,12 +68,12 @@ template <int K_COARSE, int N_DIM>
 __host__ void refine(
     cudaStream_t stream,
     const float* points,
-    const float* xi,
+    const uint32_t* offsets,
     const uint32_t* neighbors,
-    const uint32_t* level_offsets,
+    const float* cov_bins,
+    const float* cov_vals,
     const float* initial_values,
-    const float* cov_r,
-    const float* cov,
+    const float* xi,
     float* values,
     size_t n_points,
     size_t n_levels,
@@ -83,25 +83,25 @@ __host__ void refine(
     size_t threads_per_block = 256;
     size_t n_blocks;
 
-    // copy level offsets to host
-    uint32_t *level_offsets_host = (uint32_t*) malloc(n_levels * sizeof(uint32_t));
-    if (level_offsets_host == nullptr) throw std::runtime_error("Host memory allocation failed");
-    cudaMemcpy(level_offsets_host, level_offsets, n_levels * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    // copy offsets to host
+    uint32_t *offsets_host;
+    offsets_host = (uint32_t*)malloc(n_levels * sizeof(uint32_t));
+    if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
+    cudaMemcpy(offsets_host, offsets, n_levels * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
     // copy initial values to output buffer
-    cudaMemcpy(values, initial_values, level_offsets_host[0] * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpyAsync(values, initial_values, offsets_host[0] * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // iteratively refine levels
     for (size_t level = 0; level < n_levels; ++level) {
-        size_t start_idx = level_offsets_host[level];
-        size_t end_idx = (level + 1 < n_levels) ? level_offsets_host[level + 1] : n_points;
+        uint32_t start_idx = offsets_host[level];
+        uint32_t end_idx = level + 1 < n_levels ? offsets_host[level + 1] : n_points;
         n_threads = end_idx - start_idx;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
         refine_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, xi, neighbors, cov_r, cov, values, n_cov, start_idx, n_threads
+            points, neighbors, cov_bins, cov_vals, xi, values, n_cov, start_idx, n_threads
         );
     }
 
-    // free level offsets host memory
-    free(level_offsets_host);
+    free(offsets_host);
 }
