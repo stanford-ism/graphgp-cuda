@@ -16,6 +16,6 @@ message(STATUS "XLA include directory: ${XLA_DIR}")
 set(CMAKE_CUDA_ARCHITECTURES native)
 
 # Add the shared library target
-add_library(hugegp_cuda SHARED bindings.cu)
+add_library(hugegp_cuda SHARED xla_bindings.cu)
 target_include_directories(hugegp_cuda PRIVATE ${XLA_DIR})
 set_target_properties(hugegp_cuda PROPERTIES POSITION_INDEPENDENT_CODE ON)

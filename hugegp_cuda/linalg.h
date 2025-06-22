@@ -9,7 +9,6 @@ __forceinline__ __device__ void vec_copy(
     const float* a, // (n,)
     float* b // (n,)
 ) {
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
         b[i] = a[i];
     }
@@ -23,7 +22,6 @@ __forceinline__ __device__ float dot(
     const float* b // (n,)
 ) {
     float sum = 0.0f;
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
         sum += a[i] * b[i];
     }
@@ -37,12 +35,9 @@ __forceinline__ __device__ void matmul(
     const float* B, // (p, m)
     float* C // (n, m)
 ) {
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
-        #pragma unroll
         for (int j = 0; j < m; ++j) {
             C[i * m + j] = 0.0f;
-            #pragma unroll
             for (int k = 0; k < p; ++k) {
                 C[i * m + j] += A[i * p + k] * B[k * m + j];
             }
@@ -55,13 +50,10 @@ template <int n>
 __forceinline__ __device__ void cholesky(
     float* A // (n, n) lower triangular so actually n * (n + 1) / 2 entries
 ) {
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
-        #pragma unroll
         // off-diagonal elements
         for (int j = 0; j < i; ++j) {
             float sum = 0.0f;
-            #pragma unroll
             for (int k = 0; k < j; ++k) {
                 sum += A[tri(i, k)] * A[tri(j, k)];
             }
@@ -69,7 +61,6 @@ __forceinline__ __device__ void cholesky(
         }
         // diagonal elements
         float sum = 0.0f;
-        #pragma unroll
         for (int j = 0; j < i; ++j) {
             sum += A[tri(i, j)] * A[tri(i, j)];
         }
@@ -85,12 +76,9 @@ __forceinline__ __device__ void solve_cholesky(
 ) {
 
     // Forward substitution
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
-        #pragma unroll
         for (int j = 0; j < m; ++j) {
             float sum = 0.0f;
-            #pragma unroll
             for (int k = 0; k < i; ++k) {
                 sum += L[tri(i, k)] * B[k * m + j];
             }
@@ -99,12 +87,9 @@ __forceinline__ __device__ void solve_cholesky(
     }
 
     // Backward substitution
-    #pragma unroll
     for (int i = n; i-- > 0;) {
-        #pragma unroll
         for (int j = 0; j < m; ++j) {
             float sum = 0.0f;
-            #pragma unroll
             for (int k = i + 1; k < n; ++k) {
                 sum += L[tri(k, i)] * B[k * m + j];
             }
@@ -120,13 +105,10 @@ __forceinline__ __device__ void cholesky_full_pure(
     const float* A, // (n, n)
     float* L // (n, n)
 ) {
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
-        #pragma unroll
         // off-diagonal elements
         for (int j = 0; j < i; ++j) {
             float sum = 0.0f;
-            #pragma unroll
             for (int k = 0; k < j; ++k) {
                 sum += L[i * n + k] * L[j * n + k];
             }
@@ -134,7 +116,6 @@ __forceinline__ __device__ void cholesky_full_pure(
         }
         // diagonal elements
         float sum = 0.0f;
-        #pragma unroll
         for (int j = 0; j < i; ++j) {
             sum += L[i * n + j] * L[i * n + j];
         }
@@ -151,12 +132,9 @@ __forceinline__ __device__ void solve_cholesky_full_pure(
 ) {
     
     // Forward substitution
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
-        #pragma unroll
         for (int j = 0; j < m; ++j) {
             X[i * m + j] = B[i * m + j];
-            #pragma unroll
             for (int k = 0; k < i; ++k) {
                 X[i * m + j] -= L[i * n + k] * X[k * m + j];
             }
@@ -165,16 +143,12 @@ __forceinline__ __device__ void solve_cholesky_full_pure(
     }
 
     // Backward substitution
-    #pragma unroll
     for (int i = n; i-- > 0;) {
-        #pragma unroll
         for (int k = i + 1; k < n; ++k) {
-            #pragma unroll
             for (int j = 0; j < m; ++j) {
                 X[i * m + j] -= L[k * n + i] * X[k * m + j];
             }
         }
-        #pragma unroll
         for (int j = 0; j < m; ++j) {
             X[i * m + j] /= L[i * n + i];
         }

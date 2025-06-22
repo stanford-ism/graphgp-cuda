@@ -34,7 +34,6 @@ __forceinline__ __device__ float compute_distance(
     const float* point_b // (d,)
 ) {
     float dist = 0.0f;
-    #pragma unroll
     for (size_t i = 0; i < N_DIM; ++i) {
         float diff = point_a[i] - point_b[i];
         dist += diff * diff;
@@ -48,7 +47,6 @@ __forceinline__ __device__ float compute_square_distance(
     const float* point_b // (d,)
 ) {
     float dist = 0.0f;
-    #pragma unroll
     for (int i = 0; i < N_DIM; ++i) {
         float diff = point_a[i] - point_b[i];
         dist += diff * diff;

@@ -8,7 +8,7 @@
 #include "covariance.h"
 
 template <int K_COARSE, int N_DIM>  
-__global__ void refine_transpose_kernel(
+__global__ void refine_vjp_linear_kernel(
     const float *points, // (N, d)
     const uint32_t *neighbors, // (N, k)
     const float *cov_bins, // (R,)
@@ -32,28 +32,27 @@ __global__ void refine_transpose_kernel(
     float mat1[(K_COARSE * (K_COARSE + 1)) / 2];
 
     // load fine point and coarse points
-    #pragma unroll
     for (int i = 0; i < N_DIM; ++i) {
         fine_point[i] = points[idx * N_DIM + i];
     }
-    #pragma unroll
     for (int i = 0; i < K_COARSE; ++i) {
         size_t neighbor_idx = neighbors[idx * K_COARSE + i];
-        #pragma unroll
         for (int j = 0; j < N_DIM; ++j) {
             neighbor_points[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
         }
     }
 
-    // compute conditional variance
-    float variance = test_cov(0.0f); // Kff
-    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec1, n_cov); // Kfc
-    vec_copy<K_COARSE>(vec1, vec2); // Kcf = Kfc
+    // load covariance matrices
     cov_lookup_matrix_triangular<K_COARSE, N_DIM>(neighbor_points, cov_bins, cov_vals, mat1, n_cov); // Kcc
+    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, cov_vals, vec2, n_cov); // Kfc
+    float variance = cov_lookup(0.0f, cov_bins, cov_vals, n_cov); // Kff
+
+    // compute conditional variance
+    vec_copy<K_COARSE>(vec2, vec1); // Kcf = Kfc
     cholesky<K_COARSE>(mat1); // L
-    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ Kfc
-    variance -= dot<K_COARSE>(vec2, vec1); // Kff - Kcf @ (Kcc^-1 @ Kfc)
-    variance = fmaxf(variance, 0.0f); // ensure non-negative variance
+    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ Kcf
+    variance -= dot<K_COARSE>(vec2, vec1); // Kff - Kfc @ (Kcc^-1 @ Kcf)
+    variance = fmaxf(variance, 0.0f); // better not to rely on this and add jitter to cov_vals[0]
 
     // write to xi_tangent
     xi_tangent[idx] = sqrtf(variance) * values_tangent[idx];
@@ -70,7 +69,7 @@ __global__ void refine_transpose_kernel(
 }
 
 template <int K_COARSE, int N_DIM>
-__host__ void refine_transpose(
+__host__ void refine_vjp_linear(
     cudaStream_t stream,
     const float *points,
     const uint32_t *offsets,
@@ -106,7 +105,7 @@ __host__ void refine_transpose(
         uint32_t end_idx = (level + 1 < n_levels) ? offsets_host[level + 1] : n_points;
         n_threads = end_idx - start_idx;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-        refine_transpose_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
+        refine_vjp_linear_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
             points, neighbors, cov_bins, cov_vals, initial_values_tangent, xi_tangent, n_cov, start_idx, n_threads
         );
     }

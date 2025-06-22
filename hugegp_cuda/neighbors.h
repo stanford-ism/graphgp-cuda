@@ -36,7 +36,6 @@ __forceinline__ __device__ void query_coarse_neighbors_impl(
 
     // load query point
     float query[N_DIM];
-    #pragma unroll
     for (int i = 0; i < N_DIM; ++i) {
         query[i] = points[query_index * N_DIM + i];
     }
@@ -45,7 +44,6 @@ __forceinline__ __device__ void query_coarse_neighbors_impl(
     uint32_t neighbors[MAX_K];
     float distances[MAX_K];
     float max_distance = INFINITY;
-    #pragma unroll
     for (int i = 0; i < k; ++i) {
         distances[i] = max_distance;
         neighbors[i] = 0;
@@ -94,7 +92,6 @@ __forceinline__ __device__ void query_coarse_neighbors_impl(
     }
 
     // write neighbors to output
-    #pragma unroll
     for (int i = 0; i < k; ++i) {
         neighbors_out[query_index * k + i] = neighbors[i];
     }
