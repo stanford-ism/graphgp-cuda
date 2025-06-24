@@ -20,7 +20,17 @@ using xla::ffi::U32;
 using xla::ffi::S8;
 
 #define DISPATCH(DEST, FUNC) \
-    if (n_dim == 2) { \
+    if (n_dim == 1) { \
+        if      (k == 1) DEST = FUNC<1, 1>; \
+        else if (k == 2) DEST = FUNC<2, 1>; \
+        else if (k == 3) DEST = FUNC<3, 1>; \
+        else if (k == 4) DEST = FUNC<4, 1>; \
+        else if (k == 5) DEST = FUNC<5, 1>; \
+        else if (k == 6) DEST = FUNC<6, 1>; \
+        else if (k == 7) DEST = FUNC<7, 1>; \
+        else if (k == 8) DEST = FUNC<8, 1>; \
+        else throw std::runtime_error("only compiled for 1 <= k <= 8"); \
+    } else if (n_dim == 2) { \
         if      (k == 1) DEST = FUNC<1, 2>; \
         else if (k == 2) DEST = FUNC<2, 2>; \
         else if (k == 3) DEST = FUNC<3, 2>; \
@@ -41,7 +51,7 @@ using xla::ffi::S8;
         else if (k == 8) DEST = FUNC<8, 3>; \
         else throw std::runtime_error("only compiled for 1 <= k <= 8"); \
     } else { \
-        throw std::runtime_error("only compiled for 2 <= n_dim <= 3"); \
+        throw std::runtime_error("only compiled for 1 <= n_dim <= 3"); \
     }
 
 Error refine_xla(

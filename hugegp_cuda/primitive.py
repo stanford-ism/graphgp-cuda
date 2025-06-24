@@ -43,7 +43,7 @@ def _initialize():
     refine_linear_p.def_abstract_eval(refine_linear_abstract_eval)
     batching.primitive_batchers[refine_linear_p] = refine_linear_batch
     mlir.register_lowering(refine_linear_p, refine_linear_lowering, platform="gpu")  # type: ignore
-    ad.primitive_jvps[refine_linear_p] = refine_value_and_jvp
+    ad.primitive_jvps[refine_linear_p] = refine_linear_value_and_jvp
     ad.primitive_transposes[refine_linear_p] = refine_linear_transpose_rule
 
     # Register refine_linear_transpose primitive
@@ -77,15 +77,15 @@ def refine_linear_impl(*args):
     )(*args)
 
 # @trace("refine_linear_abstract_eval")
-def refine_linear_abstract_eval(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi):
-    return ShapedArray(initial_values.shape, jnp.float32)
+def refine_linear_abstract_eval(*args):
+    return ShapedArray(args[6].shape, jnp.float32)
 
 # @trace("refine_linear_lowering")
 def refine_linear_lowering(ctx, *args):
     return jax.ffi.ffi_lowering("hugegp_cuda_refine_bind")(ctx, *args)
 
-# @trace("refine_value_and_jvp")
-def refine_value_and_jvp(primals, tangents):
+# @trace("refine_linear_value_and_jvp")
+def refine_linear_value_and_jvp(primals, tangents):
     if any(type(t) is not ad.Zero for t in tangents[:5]):
         raise NotImplementedError(
             "Differentiation for refine_linear only supported for initial_values and xi."
@@ -152,7 +152,6 @@ def refine_linear_batch(vector_args, batch_axes):
 
 
 def refine_linear_transpose(points, offsets, neighbors, cov_bins, cov_vals, values, iv_shape=None):
-    print(values.shape, iv_shape)
     return refine_linear_transpose_p.bind(
         points, offsets, neighbors, cov_bins, cov_vals, values, iv_shape=iv_shape
     )
@@ -170,7 +169,6 @@ def refine_linear_transpose_impl(*args, iv_shape=None):
 
 
 def refine_linear_transpose_abstract_eval(*args, iv_shape=None):
-    print(args[5].shape, iv_shape)
     return (
         ShapedArray(args[5].shape, jnp.float32),
         ShapedArray(iv_shape, jnp.float32),
