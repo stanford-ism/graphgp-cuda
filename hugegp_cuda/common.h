@@ -8,11 +8,11 @@ __forceinline__ __device__ int tri(int i, int j) {
     return (i * (i + 1)) / 2 + j;
 }
 
-__global__ void add_to_indices(const float *a, const uint32_t *indices, float *out, size_t n) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= n) return;
-    out[indices[tid]] += a[tid];
-}
+// __global__ void add_to_indices(const float *a, const uint32_t *indices, float *out, size_t n) {
+//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+//     if (tid >= n) return;
+//     out[indices[tid]] += a[tid];
+// }
 
 __forceinline__ __device__ size_t searchsorted(const float* a, float v, size_t n) {
     size_t left = 0;
@@ -54,13 +54,33 @@ __forceinline__ __device__ float compute_square_distance(
     return dist;
 }
 
-// out[indices] = a, NOT out = a[indices]
+// copy from (B, N0) to (B, N) where N0 <= N
 template <typename T>
-__global__ void restore_order(const T* a, const uint32_t* indices, T* out, size_t n) {
+__global__ void batch_copy(T *dest, const T *src,  size_t n_batches, size_t n0, size_t n) {
     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= n) return;
-    out[indices[tid]] = a[tid];
+    size_t b = tid / n0; // batch index
+    size_t i = tid % n0; // index within batch
+    if (b >= n_batches) return;
+    dest[b * n + i] = src[b * n0 + i];
 }
+
+// set first N0 of (B, N) to value
+template <typename T>
+__global__ void batch_memset(T *dest, T value, size_t n_batches, size_t n0, size_t n) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t b = tid / n0; // batch index
+    size_t i = tid % n0; // index within batch
+    if (b >= n_batches) return;
+    dest[b * n + i] = value;
+}
+
+// // out[indices] = a, NOT out = a[indices]
+// template <typename T>
+// __global__ void restore_order(const T* a, const uint32_t* indices, T* out, size_t n) {
+//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+//     if (tid >= n) return;
+//     out[indices[tid]] = a[tid];
+// }
 
 __host__ __device__ uint32_t floored_log2(uint32_t x) {
     return (x > 0) ? 31 - __builtin_clz(x) : 0;  // returns 0 for x = 0
