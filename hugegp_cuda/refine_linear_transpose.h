@@ -81,8 +81,8 @@ template <int K_COARSE, int N_DIM>
 __host__ void refine_linear_transpose(
     cudaStream_t stream,
     const float *points,
-    const uint32_t *offsets,
     const uint32_t *neighbors,
+    const uint32_t *offsets,
     const float *cov_bins,
     const float *cov_vals,
     const float *values_tangent,

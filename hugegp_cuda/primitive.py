@@ -4,11 +4,12 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
+import numpy as np
+
 from jax import lax
 from jax.core import ShapedArray
 from jax.extend.core import Primitive
-from jax.interpreters import mlir, batching
-from jax._src.interpreters import ad
+from jax.interpreters import mlir, batching, ad
 
 from .trace_print import trace
 
@@ -23,18 +24,28 @@ def _initialize():
     so_path = next(Path(__file__).parent.glob("libhugegp_cuda*"))
     hugegp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_refine_bind",
-        jax.ffi.pycapsule(hugegp_cuda_lib.refine_bind),
+        "hugegp_cuda_refine_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.refine_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_refine_linear_transpose_bind",
-        jax.ffi.pycapsule(hugegp_cuda_lib.refine_linear_transpose_bind),
+        "hugegp_cuda_refine_linear_transpose_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.refine_linear_transpose_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_query_coarse_neighbors_bind",
-        jax.ffi.pycapsule(hugegp_cuda_lib.query_coarse_neighbors_bind),
+        "hugegp_cuda_query_preceding_neighbors_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.query_preceding_neighbors_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_query_preceding_neighbors_alt_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.query_preceding_neighbors_alt_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_compute_levels_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.compute_levels_ffi),
         platform="gpu",
     )
 
@@ -59,21 +70,47 @@ def _initialize():
     ad.primitive_transposes[refine_linear_transpose_p] = refine_linear_transpose_transpose_rule
     refine_linear_transpose_p.multiple_results = True
 
+def compute_levels(neighbors, *, n_initial):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_compute_levels_ffi",
+        jax.ShapeDtypeStruct((len(neighbors),), jnp.uint32),
+    )
+    levels = call(neighbors, n_initial=np.uint32(n_initial))
+    return levels
 
-def refine(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi):
-    return refine_linear(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi)
+def query_preceding_neighbors(points, split_dims, k):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_query_preceding_neighbors_ffi",
+        jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
+    )
+    neighbors = call(points, split_dims)
+    return neighbors
+
+def query_preceding_neighbors_alt(points, split_dims, k):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_query_preceding_neighbors_alt_ffi",
+        jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
+    )
+    neighbors = call(points, split_dims)
+    return neighbors
+
+
+
+
+def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
+    return refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
 
 
 # ================ refine_linear primitive ================
 
 # @trace("refine_linear")
-def refine_linear(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi):
-    return refine_linear_p.bind(points, offsets, neighbors, cov_bins, cov_vals, initial_values, xi)
+def refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
+    return refine_linear_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
 
 # @trace("refine_linear_impl")
 def refine_linear_impl(*args):
     return jax.ffi.ffi_call(
-        "hugegp_cuda_refine_bind", jax.ShapeDtypeStruct(args[6].shape, jnp.float32)
+        "hugegp_cuda_refine_ffi", jax.ShapeDtypeStruct(args[6].shape, jnp.float32)
     )(*args)
 
 # @trace("refine_linear_abstract_eval")
@@ -82,7 +119,7 @@ def refine_linear_abstract_eval(*args):
 
 # @trace("refine_linear_lowering")
 def refine_linear_lowering(ctx, *args):
-    return jax.ffi.ffi_lowering("hugegp_cuda_refine_bind")(ctx, *args)
+    return jax.ffi.ffi_lowering("hugegp_cuda_refine_ffi")(ctx, *args)
 
 # @trace("refine_linear_value_and_jvp")
 def refine_linear_value_and_jvp(primals, tangents):
@@ -151,15 +188,15 @@ def refine_linear_batch(vector_args, batch_axes):
 # ============ refine_linear_transpose primitive =============
 
 
-def refine_linear_transpose(points, offsets, neighbors, cov_bins, cov_vals, values, iv_shape=None):
+def refine_linear_transpose(points, neighbors, offsets, cov_bins, cov_vals, values, iv_shape=None):
     return refine_linear_transpose_p.bind(
-        points, offsets, neighbors, cov_bins, cov_vals, values, iv_shape=iv_shape
+        points, neighbors, offsets, cov_bins, cov_vals, values, iv_shape=iv_shape
     )
 
 
 def refine_linear_transpose_impl(*args, iv_shape=None):
     return jax.ffi.ffi_call(
-        "hugegp_cuda_refine_linear_transpose_bind",
+        "hugegp_cuda_refine_linear_transpose_ffi",
         (
             jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
             jax.ShapeDtypeStruct(iv_shape, jnp.float32),
@@ -177,7 +214,7 @@ def refine_linear_transpose_abstract_eval(*args, iv_shape=None):
 
 
 def refine_linear_transpose_lowering(ctx, *args, iv_shape=None):
-    return jax.ffi.ffi_lowering("hugegp_cuda_refine_linear_transpose_bind")(ctx, *args)
+    return jax.ffi.ffi_lowering("hugegp_cuda_refine_linear_transpose_ffi")(ctx, *args)
 
 
 def refine_linear_transpose_value_and_jvp(primals, tangents, iv_shape=None):
@@ -242,10 +279,11 @@ def refine_linear_transpose_batch(vector_args, batch_axes, iv_shape=None):
 # ============ query_coarse_neighbors primitive =============
 
 
-def query_coarse_neighbors(points, split_dims, k):
-    call = jax.ffi.ffi_call(
-        "hugegp_cuda_query_coarse_neighbors_bind",
-        jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
-    )
-    neighbors = call(points, split_dims)
-    return neighbors
+# def query_coarse_neighbors(points, split_dims, k):
+#     call = jax.ffi.ffi_call(
+#         "hugegp_cuda_query_coarse_neighbors_ffi",
+#         jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
+#     )
+#     neighbors = call(points, split_dims)
+#     return neighbors
+

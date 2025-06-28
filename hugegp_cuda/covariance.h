@@ -42,7 +42,7 @@ __forceinline__ __device__ void cov_lookup_matrix_triangular(
 }
 
 template <int n, int m, int N_DIM>
-__forceinline__ __device__ float cov_lookup_matrix_full(
+__forceinline__ __device__ void cov_lookup_matrix_full(
     const float *points_a, // (n, d)
     const float *points_b, // (m, d)
     const float *cov_bins, // (R,)
@@ -80,7 +80,7 @@ __forceinline__ __device__ void cov_lookup_matrix_triangular_2(
 
 // compute two covariance matrices at the same time, useful for JVP
 template <int n, int m, int N_DIM>
-__forceinline__ __device__ float cov_lookup_matrix_full_2(
+__forceinline__ __device__ void cov_lookup_matrix_full_2(
     const float *points_a, // (n, d)
     const float *points_b, // (m, d)
     const float *cov_bins, // (R,)
