@@ -70,6 +70,9 @@ def _initialize():
     ad.primitive_transposes[refine_linear_transpose_p] = refine_linear_transpose_transpose_rule
     refine_linear_transpose_p.multiple_results = True
 
+
+# ========== exposed functions ==========
+
 def compute_levels(neighbors, *, n_initial):
     call = jax.ffi.ffi_call(
         "hugegp_cuda_compute_levels_ffi",
@@ -94,18 +97,15 @@ def query_preceding_neighbors_alt(points, split_dims, k):
     neighbors = call(points, split_dims)
     return neighbors
 
+def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi):
+    return refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi)
 
 
-
-def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-    return refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
-
-
-# ================ refine_linear primitive ================
+# ========== refine_linear primitive ==========
 
 # @trace("refine_linear")
-def refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-    return refine_linear_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+def refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi):
+    return refine_linear_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi)
 
 # @trace("refine_linear_impl")
 def refine_linear_impl(*args):
@@ -123,40 +123,40 @@ def refine_linear_lowering(ctx, *args):
 
 # @trace("refine_linear_value_and_jvp")
 def refine_linear_value_and_jvp(primals, tangents):
-    if any(type(t) is not ad.Zero for t in tangents[:5]):
+    if any(type(t) is not ad.Zero for t in tangents[:6]):
         raise NotImplementedError(
-            "Differentiation for refine_linear only supported for initial_values and xi."
+            "Differentiation for refine_linear only supported for xi."
         )
-    if any(type(t) is ad.Zero for t in tangents[5:]):
-        raise NotImplementedError("Not differentiated with respect to initial_values and xi?")
+    if any(type(t) is ad.Zero for t in tangents[6:]):
+        raise NotImplementedError("Not differentiated with respect to xi?")
     primals_out = refine_linear(*primals)
-    tangents_out = refine_linear(*primals[:5], *tangents[5:])
+    tangents_out = refine_linear(*primals[:6], *tangents[6:])
     return primals_out, tangents_out
 
 # @trace("refine_linear_transpose_rule")
 def refine_linear_transpose_rule(tangents_out, *primals):
-    p, o, n, cb, cv, iv, x = primals
+    p, n, o, cb, cv, ic, x = primals
     dv = tangents_out
 
-    if any(ad.is_undefined_primal(t) for t in [p, o, n, cb, cv]):
-        raise NotImplementedError("Differentiation only supported for xi and initial_values.")
+    if any(ad.is_undefined_primal(t) for t in [p, n, o, cb, cv, ic]):
+        raise NotImplementedError("Differentiation only supported for xi.")
 
-    if not all(ad.is_undefined_primal(t) for t in [iv, x]):
-        raise NotImplementedError("Not differentiated with respect to xi and initial_values?")
+    if not all(ad.is_undefined_primal(t) for t in [x]):
+        raise NotImplementedError("Not differentiated with respect to xi?")
 
     if type(dv) is ad.Zero:
         raise NotImplementedError("Not differentiated with respect to values?")
 
-    dv_buffer, div, dx = refine_linear_transpose(p, o, n, cb, cv, dv, iv_shape=iv.aval.shape)
-    return None, None, None, None, None, div, dx
+    dv_buffer, dx = refine_linear_transpose(p, n, o, cb, cv, ic, dv)
+    return None, None, None, None, None, None, dx
 
 # @trace("refine_linear_batch")
 def refine_linear_batch(vector_args, batch_axes):
-    p, o, n, cb, cv, iv, x = vector_args
-    pa, oa, na, cba, cva, iva, xa = batch_axes
+    p, n, o, cb, cv, ic, x = vector_args
+    pa, oa, na, cba, cva, ica, xa = batch_axes
 
     if any(a is not None for a in [pa, oa, na, cba]):
-        raise NotImplementedError("Batching only supported for cov_vals, initial_values, and xi.")
+        raise NotImplementedError("Batching only supported for cov_vals, initial_cholesky, and xi.")
 
     # extract batch size, guaranteed to be the same for all batched arguments
     batch_size = 1
@@ -171,10 +171,10 @@ def refine_linear_batch(vector_args, batch_axes):
     else:
         cv = batching.moveaxis(cv, cva, 0)
 
-    if iva is None:
-        iv = jnp.broadcast_to(iv, (batch_size,) + iv.shape)
+    if ica is None:
+        ic = jnp.broadcast_to(ic, (batch_size,) + ic.shape)
     else:
-        iv = batching.moveaxis(iv, iva, 0)
+        ic = batching.moveaxis(ic, ica, 0)
 
     if xa is None:
         x = jnp.broadcast_to(x, (batch_size,) + x.shape)
@@ -182,58 +182,55 @@ def refine_linear_batch(vector_args, batch_axes):
         x = batching.moveaxis(x, xa, 0)
 
     # call the primitive with the batched arguments
-    return refine_linear(p, o, n, cb, cv, iv, x), 0
+    return refine_linear(p, n, o, cb, cv, ic, x), 0
 
 
-# ============ refine_linear_transpose primitive =============
+# ========== refine_linear_transpose primitive ==========
 
-
-def refine_linear_transpose(points, neighbors, offsets, cov_bins, cov_vals, values, iv_shape=None):
+def refine_linear_transpose(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, values):
     return refine_linear_transpose_p.bind(
-        points, neighbors, offsets, cov_bins, cov_vals, values, iv_shape=iv_shape
+        points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, values
     )
 
 
-def refine_linear_transpose_impl(*args, iv_shape=None):
+def refine_linear_transpose_impl(*args):
     return jax.ffi.ffi_call(
         "hugegp_cuda_refine_linear_transpose_ffi",
         (
-            jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
-            jax.ShapeDtypeStruct(iv_shape, jnp.float32),
-            jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
+            jax.ShapeDtypeStruct(args[6].shape, jnp.float32),
+            jax.ShapeDtypeStruct(args[6].shape, jnp.float32),
         ),
     )(*args)
 
 
-def refine_linear_transpose_abstract_eval(*args, iv_shape=None):
+def refine_linear_transpose_abstract_eval(*args):
     return (
-        ShapedArray(args[5].shape, jnp.float32),
-        ShapedArray(iv_shape, jnp.float32),
-        ShapedArray(args[5].shape, jnp.float32),
+        ShapedArray(args[6].shape, jnp.float32),
+        ShapedArray(args[6].shape, jnp.float32),
     )
 
 
-def refine_linear_transpose_lowering(ctx, *args, iv_shape=None):
+def refine_linear_transpose_lowering(ctx, *args):
     return jax.ffi.ffi_lowering("hugegp_cuda_refine_linear_transpose_ffi")(ctx, *args)
 
 
-def refine_linear_transpose_value_and_jvp(primals, tangents, iv_shape=None):
-    if any(type(t) is not ad.Zero for t in tangents[:5]):
+def refine_linear_transpose_value_and_jvp(primals, tangents):
+    if any(type(t) is not ad.Zero for t in tangents[:6]):
         raise NotImplementedError(
             "Differentiation for refine_linear_transpose only supported for values."
         )
-    if type(tangents[5]) is ad.Zero:
+    if type(tangents[6]) is ad.Zero:
         raise NotImplementedError("Not differentiated with respect to values?")
-    primals_out = refine_linear_transpose(*primals, iv_shape=iv_shape)
-    tangents_out = refine_linear_transpose(*primals[:5], *tangents[5:], iv_shape=iv_shape)
+    primals_out = refine_linear_transpose(*primals)
+    tangents_out = refine_linear_transpose(*primals[:6], *tangents[6:])
     return primals_out, tangents_out
 
 
-def refine_linear_transpose_transpose_rule(tangents_out, *primals, iv_shape=None):
-    p, o, n, cb, cv, v = primals
+def refine_linear_transpose_transpose_rule(tangents_out, *primals):
+    p, n, o, cb, cv, ic, v = primals
     dv_buffer, div, dx = tangents_out
 
-    if any(ad.is_undefined_primal(t) for t in [p, o, n, cb, cv]):
+    if any(ad.is_undefined_primal(t) for t in [p, n, o, cb, cv, ic]):
         raise NotImplementedError("Differentiation only supported for values.")
 
     if not ad.is_undefined_primal(v):
@@ -242,13 +239,13 @@ def refine_linear_transpose_transpose_rule(tangents_out, *primals, iv_shape=None
     if any(type(t) is ad.Zero for t in [div, dx]):
         raise NotImplementedError("Not differentiated with respect to initial_values and xi?")
 
-    dv = refine_linear(p, o, n, cb, cv, div, dx)
+    dv = refine_linear(p, n, o, cb, cv, ic, dx)
     return None, None, None, None, None, dv
 
 
-def refine_linear_transpose_batch(vector_args, batch_axes, iv_shape=None):
-    p, o, n, cb, cv, v = vector_args
-    pa, oa, na, cba, cva, va = batch_axes
+def refine_linear_transpose_batch(vector_args, batch_axes):
+    p, n, o, cb, cv, ic, v = vector_args
+    pa, oa, na, cba, cva, ica, va = batch_axes
 
     if any(a is not None for a in [pa, oa, na, cba]):
         raise NotImplementedError("Batching only supported for cov_vals, initial_values, and xi.")
@@ -266,14 +263,18 @@ def refine_linear_transpose_batch(vector_args, batch_axes, iv_shape=None):
     else:
         cv = batching.moveaxis(cv, cva, 0)
 
+    if ica is None:
+        ic = jnp.broadcast_to(ic, (batch_size,) + ic.shape)
+    else:
+        ic = batching.moveaxis(ic, ica, 0)
+
     if va is None:
         v = jnp.broadcast_to(v, (batch_size,) + v.shape)
     else:
         v = batching.moveaxis(v, va, 0)
-    batched_iv_shape = (batch_size,) + iv_shape
 
     # call the primitive with the batched arguments
-    return refine_linear_transpose(p, o, n, cb, cv, v, iv_shape=batched_iv_shape), (0, 0, 0)
+    return refine_linear_transpose(p, n, o, cb, cv, ic, v), (0, 0)
 
 
 # ============ query_coarse_neighbors primitive =============

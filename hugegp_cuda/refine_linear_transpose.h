@@ -34,46 +34,34 @@ __global__ void refine_linear_transpose_kernel(
     float *b_xi_tangent = xi_tangent + b * n_points;
 
     // define working variables, these should fit on register
-    float fine_point[N_DIM];
-    float neighbor_points[K_COARSE * N_DIM];
-    float vec1[K_COARSE];
-    float vec2[K_COARSE];
-    float mat1[(K_COARSE * (K_COARSE + 1)) / 2];
+    float pts[(K_COARSE + 1) * N_DIM]; // fine point + K coarse points
+    float vec[K_COARSE + 1];
+    float mat[((K_COARSE + 1) * (K_COARSE + 2)) / 2]; // lower triangular matrix for joint covariance
 
-    // load fine point and coarse points
-    for (int i = 0; i < N_DIM; ++i) {
-        fine_point[i] = points[idx * N_DIM + i];
-    }
+    // load coarse points, coarse values, fine points
     for (int i = 0; i < K_COARSE; ++i) {
         size_t neighbor_idx = neighbors[idx * K_COARSE + i];
         for (int j = 0; j < N_DIM; ++j) {
-            neighbor_points[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
+            pts[(K_COARSE - 1 - i) * N_DIM + j] = points[neighbor_idx * N_DIM + j];
         }
     }
+    for (int j = 0; j < N_DIM; ++j) {
+        pts[K_COARSE * N_DIM + j] = points[idx * N_DIM + j];
+    }
 
-    // load covariance matrices
-    cov_lookup_matrix_triangular<K_COARSE, N_DIM>(neighbor_points, cov_bins, b_cov_vals, mat1, n_cov); // Kcc
-    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(fine_point, neighbor_points, cov_bins, b_cov_vals, vec2, n_cov); // Kfc
-    float variance = cov_lookup(0.0f, cov_bins, b_cov_vals, n_cov); // Kff
+    // build joint covariance matrix
+    cov_lookup_matrix_triangular<K_COARSE, N_DIM>(pts, cov_bins, b_cov_vals, mat, n_cov); // Kcc
+    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(pts + K_COARSE * N_DIM, pts, cov_bins, b_cov_vals, mat + tri(K_COARSE, 0), n_cov); // Kfc
+    mat[tri(K_COARSE, K_COARSE)] = cov_lookup(0.0f, cov_bins, b_cov_vals, n_cov); // Kff
 
-    // compute conditional variance
-    vec_copy<K_COARSE>(vec2, vec1); // Kcf = Kfc
-    cholesky<K_COARSE>(mat1); // L
-    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ Kcf
-    variance -= dot<K_COARSE>(vec2, vec1); // Kff - Kfc @ (Kcc^-1 @ Kcf)
-    variance = fmaxf(variance, 0.0f); // better not to rely on this and add jitter to cov_vals[0]
-
-    // write to xi_tangent
-    b_xi_tangent[idx] = sqrtf(variance) * b_values_tangent[idx];
-
-    // compute addition to values_tangent
-    const float *fine_value_tangent = b_values_tangent + idx;
-    matmul<K_COARSE, 1, 1>(vec2, fine_value_tangent, vec1); // Kcf @ vt
-    solve_cholesky<K_COARSE, 1>(mat1, vec1); // Kcc^-1 @ (Kcf @ vt)
-
-    // add to values_tangent (multiple threads may write to the same index)
+    // factorize and write xi_tangent and values_tangent
+    cholesky<K_COARSE + 1>(mat); // L
+    float fine_value_tangent = b_values_tangent[idx];
+    matmul<K_COARSE + 1, 1, 1>(mat + tri(K_COARSE, 0), &fine_value_tangent, vec);
+    solve_cholesky_backward<K_COARSE, K_COARSE>(mat, vec);
+    b_xi_tangent[idx] = mat[tri(K_COARSE, K_COARSE)] * fine_value_tangent;
     for (int i = 0; i < K_COARSE; ++i) {
-        atomicAdd(b_values_tangent + neighbors[idx * K_COARSE + i], vec1[i]);
+        atomicAdd(b_values_tangent + neighbors[idx * K_COARSE + i], vec[i]);
     }
 }
 
@@ -85,9 +73,9 @@ __host__ void refine_linear_transpose(
     const uint32_t *offsets,
     const float *cov_bins,
     const float *cov_vals,
+    const float *initial_cholesky,
     const float *values_tangent,
     float *values_tangent_buffer,
-    float *initial_values_tangent,
     float *xi_tangent,
     size_t n_points,
     size_t n_levels,
@@ -104,14 +92,7 @@ __host__ void refine_linear_transpose(
     if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
     cudaMemcpy(offsets_host, offsets, n_levels * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
-    // fill xi_tangent with zeros on the first level
-    n_threads = n_batches * offsets_host[0];
-    n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    batch_memset<float><<<n_blocks, threads_per_block, 0, stream>>>(
-        xi_tangent, 0.0f, n_batches, offsets_host[0], n_points
-    );
-
-    // copy tangents to buffer 
+    // copy value tangents to buffer 
     cudaMemcpyAsync(values_tangent_buffer, values_tangent, n_batches * n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 
     // walk backwards through levels and compute tangents
@@ -125,11 +106,11 @@ __host__ void refine_linear_transpose(
         );
     }
 
-    // copy initial values_tangent to output buffer
+    // multiply initial_cholesky transpose by values_tangent_buffer to get initial values_tangent
     n_threads = n_batches * offsets_host[0];
     n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    batch_copy<float><<<n_blocks, threads_per_block, 0, stream>>>(
-        initial_values_tangent, values_tangent_buffer, n_batches, offsets_host[0], n_points
+    batched_transpose_matvec_kernel<<<n_blocks, threads_per_block, 0, stream>>>(
+        initial_cholesky, values_tangent_buffer, xi_tangent, n_batches, offsets_host[0], n_points
     );
 
     free(offsets_host);

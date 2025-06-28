@@ -79,8 +79,8 @@ Error refine_ffi_impl(
     Buffer<U32> offsets, // (L,) first entry is number of initial points
     Buffer<F32> cov_bins, // (R,)
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
-    Buffer<F32> initial_values, // (B1, B2, ..., N0)
-    Buffer<F32> xi, // (B1, B2, ..., N) the first N0 are not used
+    Buffer<F32> initial_cholesky, // (B1, B2, ..., N0, N0)
+    Buffer<F32> xi, // (B1, B2, ..., N)
     ResultBuffer<F32> values // (B1, B2, ..., N)
 ) {
     size_t n_points = points.dimensions()[0];
@@ -105,7 +105,7 @@ Error refine_ffi_impl(
         offsets.typed_data(),
         cov_bins.typed_data(),
         cov_vals.typed_data(),
-        initial_values.typed_data(),
+        initial_cholesky.typed_data(),
         xi.typed_data(),
         values->typed_data(),
         n_points,
@@ -126,7 +126,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<U32>>() // offsets
         .Arg<Buffer<F32>>() // cov_bins
         .Arg<Buffer<F32>>() // cov_vals
-        .Arg<Buffer<F32>>() // initial_values
+        .Arg<Buffer<F32>>() // initial_cholesky
         .Arg<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values
 );
@@ -140,9 +140,9 @@ Error refine_linear_transpose_ffi_impl(
     Buffer<U32> offsets, // (L,) first entry is number of initial points
     Buffer<F32> cov_bins, // (R,)
     Buffer<F32> cov_vals, // (B1, B2, ..., N)
+    Buffer<F32> initial_cholesky, // (B1, B2, ..., N0, N0)
     Buffer<F32> values_tangent, // (B1, B2, ..., N)
     ResultBuffer<F32> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
-    ResultBuffer<F32> initial_values_tangent, // (B1, B2, ..., N0) copied from values_tangent_buffer
     ResultBuffer<F32> xi_tangent // (B1, B2, ..., N)
 ) {
     size_t n_points = points.dimensions()[0];
@@ -167,9 +167,9 @@ Error refine_linear_transpose_ffi_impl(
         offsets.typed_data(),
         cov_bins.typed_data(),
         cov_vals.typed_data(),
+        initial_cholesky.typed_data(),
         values_tangent.typed_data(),
         values_tangent_buffer->typed_data(),
-        initial_values_tangent->typed_data(),
         xi_tangent->typed_data(),
         n_points,
         n_levels,
@@ -189,9 +189,9 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<U32>>() // offsets
         .Arg<Buffer<F32>>() // cov_bins
         .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // initial_cholesky
         .Arg<Buffer<F32>>() // values_tangent
         .Ret<Buffer<F32>>() // values_tangent_buffer
-        .Ret<Buffer<F32>>() // initial_values_tangent
         .Ret<Buffer<F32>>() // xi_tangent
 );
 

@@ -68,9 +68,9 @@ __forceinline__ __device__ void cholesky(
     }
 }
 
-// solve A X = B given L, the Cholesky decomposition of A, assuming triangular matrix order and modifying B in place
+// solve L X = B given lower triangular L
 template <int n, int m>
-__forceinline__ __device__ void solve_cholesky(
+__forceinline__ __device__ void solve_cholesky_forward(
     const float* L, // (n, n)
     float* B // (n, m)
 ) {
@@ -85,7 +85,14 @@ __forceinline__ __device__ void solve_cholesky(
             B[i * m + j] = (B[i * m + j] - sum) / L[tri(i, i)];
         }
     }
+}
 
+// solve L.T X = B given lower triangular L
+template <int n, int m>
+__forceinline__ __device__ void solve_cholesky_backward(
+    const float* L, // (n, n)
+    float* B // (n, m)
+) {
     // Backward substitution
     for (int i = n; i-- > 0;) {
         for (int j = 0; j < m; ++j) {
@@ -96,6 +103,16 @@ __forceinline__ __device__ void solve_cholesky(
             B[i * m + j] = (B[i * m + j] - sum) / L[tri(i, i)];
         }
     }
+}
+
+// solve A X = B given L, the Cholesky decomposition of A, assuming triangular matrix order and modifying B in place
+template <int n, int m>
+__forceinline__ __device__ void solve_cholesky(
+    const float* L, // (n, n)
+    float* B // (n, m)
+) {
+    solve_cholesky_forward<n, m>(L, B);
+    solve_cholesky_backward<n, m>(L, B);
 }
 
 
@@ -153,6 +170,48 @@ __forceinline__ __device__ void solve_cholesky_full_pure(
             X[i * m + j] /= L[i * n + i];
         }
     }
+}
+
+__global__ void batched_matvec_kernel(
+    const float* A, // (B, n, n)
+    const float* x, // (B, p)
+    float* y, // (B, p)
+    size_t n_batches,
+    size_t n,
+    size_t p // p >= n, will only use first n entries
+) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_batches * n) return;
+
+    size_t b = tid / n; // batch index
+    size_t i = tid % n; // row index in y
+
+    float sum = 0.0f;
+    for (size_t j = 0; j < n; ++j) {
+        sum += A[b * n * n + i * n + j] * x[b * p + j];
+    }
+    y[b * p + i] = sum;
+}
+
+__global__ void batched_transpose_matvec_kernel(
+    const float* A, // (B, n, n)
+    const float* x, // (B, p)
+    float* y, // (B, p)
+    size_t n_batches,
+    size_t n,
+    size_t p // p >= n, will only use first n entries
+) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_batches * n) return;
+
+    size_t b = tid / n; // batch index
+    size_t i = tid % n; // row index in y
+
+    float sum = 0.0f;
+    for (size_t j = 0; j < n; ++j) {
+        sum += A[b * n * n + j * n + i] * x[b * p + j]; // only difference is i <-> j from the above
+    }
+    y[b * p + i] = sum;
 }
 
 // apparently more numerically stable?
