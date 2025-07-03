@@ -3,12 +3,11 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
-#include <cublas_v2.h>
 #include "common.h"
 #include "linalg.h"
 #include "covariance.h"
 
-template <int K_COARSE, int N_DIM>
+template <int MAX_K, int N_DIM>
 __global__ void refine_kernel(
     const float* points, // (N, d)
     const uint32_t* neighbors, // (N, k)
@@ -16,6 +15,7 @@ __global__ void refine_kernel(
     const float* cov_vals, // (B, R)
     const float* xi, // (B, R)
     float* values, // (B, R)
+    int k,
     size_t n_points,
     size_t n_cov,
     size_t n_batches, // number of batches, affects cov_vals, xi, and values
@@ -35,37 +35,41 @@ __global__ void refine_kernel(
     float *b_values = values + b * n_points;
 
     // define working variables, these should fit on register
-    float pts[(K_COARSE + 1) * N_DIM]; // fine point + K coarse points
-    float vec[K_COARSE + 1];
-    float mat[((K_COARSE + 1) * (K_COARSE + 2)) / 2]; // lower triangular matrix for joint covariance
+    float pts[(MAX_K + 1) * N_DIM]; // fine point + K coarse points
+    float vec[MAX_K + 1];
+    float mat[((MAX_K + 1) * (MAX_K + 2)) / 2]; // lower triangular matrix for joint covariance
 
-    // load coarse points, coarse values, fine points, and fine xi
-    for (int i = 0; i < K_COARSE; ++i) {
-        size_t neighbor_idx = neighbors[idx * K_COARSE + i];
-        vec[K_COARSE - 1 - i] = b_values[neighbor_idx]; // order is decreasing distance to fine point
+    // load neighbor points and either values or xi depending on if coarse or fine
+    size_t k_coarse = 0;
+    for (int i = 0; i < k; ++i) {
+        size_t neighbor_idx = neighbors[idx * k + i];
+        if (neighbor_idx < start_idx) {
+            vec[i] = b_values[neighbor_idx]; // coarse points use values
+            k_coarse++; // coarse should all be before fine
+        } else {
+            vec[i] = b_xi[neighbor_idx]; // fine points use xi
+        }
         for (int j = 0; j < N_DIM; ++j) {
-            pts[(K_COARSE - 1 - i) * N_DIM + j] = points[neighbor_idx * N_DIM + j];
+            pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
         }
     }
+
+    // load current point
     for (int j = 0; j < N_DIM; ++j) {
-        pts[K_COARSE * N_DIM + j] = points[idx * N_DIM + j];
+        pts[k * N_DIM + j] = points[idx * N_DIM + j];
     }
-    vec[K_COARSE] = b_xi[idx]; // fine xi at the end of coarse values vector
+    vec[k] = b_xi[idx];
 
-    // build joint covariance matrix
-    cov_lookup_matrix_triangular<K_COARSE, N_DIM>(pts, cov_bins, b_cov_vals, mat, n_cov); // Kcc
-    cov_lookup_matrix_full<1, K_COARSE, N_DIM>(pts + K_COARSE * N_DIM, pts, cov_bins, b_cov_vals, mat + tri(K_COARSE, 0), n_cov); // Kfc
-    mat[tri(K_COARSE, K_COARSE)] = cov_lookup(0.0f, cov_bins, b_cov_vals, n_cov); // Kff
-
-    // factorize and generate fine value
-    cholesky<K_COARSE + 1>(mat); // L
-    solve_cholesky_forward<K_COARSE, 1>(mat, vec); // x = Lcc^-1 @ v
-    b_values[idx] = dot<K_COARSE + 1>(mat + tri(K_COARSE, 0), vec); // v = L @ x
+    // refinement operation
+    cov_lookup_matrix<N_DIM>(pts, cov_bins, b_cov_vals, mat, k + 1, n_cov); // joint covariance
+    cholesky(mat, k + 1); // factorize
+    solve_cholesky_forward(mat, vec, k_coarse, 1); // x = Lcc^-1 @ v
+    b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // v = L @ x
 }
 
 
 
-template <int K_COARSE, int N_DIM>
+template <int MAX_K, int N_DIM>
 __host__ void refine(
     cudaStream_t stream,
     const float* points,
@@ -76,6 +80,7 @@ __host__ void refine(
     const float* initial_cholesky,
     const float* xi,
     float* values,
+    int k,
     size_t n_points,
     size_t n_levels,
     size_t n_cov,
@@ -104,69 +109,10 @@ __host__ void refine(
         uint32_t end_idx = level + 1 < n_levels ? offsets_host[level + 1] : n_points;
         n_threads = (end_idx - start_idx) * n_batches;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-        refine_kernel<K_COARSE, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, neighbors, cov_bins, cov_vals, xi, values, n_points, n_cov, n_batches, start_idx, n_threads
+        refine_kernel<MAX_K, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
+            points, neighbors, cov_bins, cov_vals, xi, values, k, n_points, n_cov, n_batches, start_idx, n_threads
         );
     }
 
     free(offsets_host);
 }
-
-
-/* CuBLAS matrix multiply code if I figure out how to link it */
-
-// __global__ void fill_batch_pointers(
-//     const float* A, // (B, N0, N0)
-//     const float* X, // (B, N)
-//     const float* Y, // (B, N)
-//     float** Aarray, // (B,)
-//     float** Xarray, // (B,)
-//     float** Yarray, // (B,)
-//     size_t n_batches,
-//     size_t n_initial,
-//     size_t n_points // total points
-// ) {
-//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-//     if (tid >= n_batches) return;
-//     Aarray[tid] = const_cast<float*>(A + tid * n_initial * n_initial);
-//     Xarray[tid] = const_cast<float*>(X + tid * n_points);
-//     Yarray[tid] = const_cast<float*>(Y + tid * n_points);
-// }
-
-//     // set up cuBLAS handle
-//     cublasHandle_t handle;
-//     cublasCreate(&handle);
-//     cublasSetStream(handle, stream);
-
-//     // create device arrays for batch pointers
-//     float **Aarray, **Xarray, **Yarray;
-//     cudaMalloc(&Aarray, n_batches * sizeof(float*));
-//     cudaMalloc(&Xarray, n_batches * sizeof(float*));
-//     cudaMalloc(&Yarray, n_batches * sizeof(float*));
-//     n_threads = n_batches;
-//     n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-//     fill_batch_pointers<<<n_blocks, threads_per_block, 0, stream>>>(
-//         initial_cholesky, xi, values,
-//         Aarray, Xarray, Yarray,
-//         n_batches, n_initial, n_points
-//     );
-
-//     // cuBLAS matrix multiply to compute initial values
-//     const float alpha = 1.0f;
-//     const float beta = 0.0f;
-//     cublasSgemv(
-//         handle, CUBLAS_OP_T,
-//         n_initial, n_initial,
-//         &alpha,
-//         initial_cholesky, n_initial,
-//         xi, 1,
-//         &beta,
-//         values, 1
-//     );
-
-//     // clean up cuBLAS
-//     cudaStreamSynchronize(stream);
-//     cudaFree(Aarray);
-//     cudaFree(Xarray);
-//     cudaFree(Yarray);
-//     cublasDestroy(handle);

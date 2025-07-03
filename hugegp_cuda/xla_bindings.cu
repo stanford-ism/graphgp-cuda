@@ -22,52 +22,40 @@ using xla::ffi::S8;
 
 #define DISPATCH(DEST, FUNC) \
     if (n_dim == 1) { \
-        if      (k == 1)  DEST = FUNC<1,  1>; \
-        else if (k == 2)  DEST = FUNC<2,  1>; \
-        else if (k == 4)  DEST = FUNC<4,  1>; \
-        else if (k == 8)  DEST = FUNC<8,  1>; \
-        else if (k == 16) DEST = FUNC<16, 1>; \
-        else if (k == 32) DEST = FUNC<32, 1>; \
-        else throw std::runtime_error("only compiled for k power of two <= 32"); \
+        if      (k <= 4)  DEST = FUNC<4,  1>; \
+        else if (k <= 8)  DEST = FUNC<8,  1>; \
+        else if (k <= 16) DEST = FUNC<16, 1>; \
+        else if (k <= 32) DEST = FUNC<32, 1>; \
+        else throw std::runtime_error("only compiled for k <= 32"); \
     } else if (n_dim == 2) { \
-        if      (k == 1)  DEST = FUNC<1,  2>; \
-        else if (k == 2)  DEST = FUNC<2,  2>; \
-        else if (k == 4)  DEST = FUNC<4,  2>; \
-        else if (k == 8)  DEST = FUNC<8,  2>; \
-        else if (k == 16) DEST = FUNC<16, 2>; \
-        else if (k == 32) DEST = FUNC<32, 2>; \
-        else throw std::runtime_error("only compiled for k power of two <= 32"); \
+        if      (k <= 4)  DEST = FUNC<4,  2>; \
+        else if (k <= 8)  DEST = FUNC<8,  2>; \
+        else if (k <= 16) DEST = FUNC<16, 2>; \
+        else if (k <= 32) DEST = FUNC<32, 2>; \
+        else throw std::runtime_error("only compiled for k <= 32"); \
     } else if (n_dim == 3) { \
-        if      (k == 1)  DEST = FUNC<1,  3>; \
-        else if (k == 2)  DEST = FUNC<2,  3>; \
-        else if (k == 4)  DEST = FUNC<4,  3>; \
-        else if (k == 8)  DEST = FUNC<8,  3>; \
-        else if (k == 16) DEST = FUNC<16, 3>; \
-        else if (k == 32) DEST = FUNC<32, 3>; \
-        else throw std::runtime_error("only compiled for k power of two <= 32"); \
+        if      (k <= 4)  DEST = FUNC<4,  3>; \
+        else if (k <= 8)  DEST = FUNC<8,  3>; \
+        else if (k <= 16) DEST = FUNC<16, 3>; \
+        else if (k <= 32) DEST = FUNC<32, 3>; \
+        else throw std::runtime_error("only compiled for k <= 32"); \
     } else if (n_dim == 4) { \
-        if      (k == 1)  DEST = FUNC<1,  4>; \
-        else if (k == 2)  DEST = FUNC<2,  4>; \
-        else if (k == 4)  DEST = FUNC<4,  4>; \
-        else if (k == 8)  DEST = FUNC<8,  4>; \
-        else if (k == 16) DEST = FUNC<16, 4>; \
-        else if (k == 32) DEST = FUNC<32, 4>; \
-        else throw std::runtime_error("only compiled for k power of two <= 32"); \
+        if      (k <= 4)  DEST = FUNC<4,  4>; \
+        else if (k <= 8)  DEST = FUNC<8,  4>; \
+        else if (k <= 16) DEST = FUNC<16, 4>; \
+        else if (k <= 32) DEST = FUNC<32, 4>; \
+        else throw std::runtime_error("only compiled for k <= 32"); \
     } else if (n_dim == 5) { \
-        if      (k == 1)  DEST = FUNC<1,  5>; \
-        else if (k == 2)  DEST = FUNC<2,  5>; \
-        else if (k == 4)  DEST = FUNC<4,  5>; \
-        else if (k == 8)  DEST = FUNC<8,  5>; \
-        else if (k == 16) DEST = FUNC<16, 5>; \
-        else if (k == 32) DEST = FUNC<32, 5>; \
-        else throw std::runtime_error("only compiled for k power of two <= 32"); \
+        if      (k <= 4)  DEST = FUNC<4,  5>; \
+        else if (k <= 8)  DEST = FUNC<8,  5>; \
+        else if (k <= 16) DEST = FUNC<16, 5>; \
+        else if (k <= 32) DEST = FUNC<32, 5>; \
+        else throw std::runtime_error("only compiled for k <= 32"); \
     } else if (n_dim == 6) { \
-        if      (k == 1)  DEST = FUNC<1,  6>; \
-        else if (k == 2)  DEST = FUNC<2,  6>; \
-        else if (k == 4)  DEST = FUNC<4,  6>; \
-        else if (k == 8)  DEST = FUNC<8,  6>; \
-        else if (k == 16) DEST = FUNC<16, 6>; \
-        else if (k == 32) DEST = FUNC<32, 6>; \
+        if      (k <= 4)  DEST = FUNC<4,  6>; \
+        else if (k <= 8)  DEST = FUNC<8,  6>; \
+        else if (k <= 16) DEST = FUNC<16, 6>; \
+        else if (k <= 32) DEST = FUNC<32, 6>; \
     } else { \
         throw std::runtime_error("only compiled for 1 <= n_dim <= 6"); \
     }
@@ -108,6 +96,7 @@ Error refine_ffi_impl(
         initial_cholesky.typed_data(),
         xi.typed_data(),
         values->typed_data(),
+        k,
         n_points,
         n_levels,
         n_cov,
@@ -130,7 +119,6 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values
 );
-
 
 
 Error refine_linear_transpose_ffi_impl(
@@ -171,6 +159,7 @@ Error refine_linear_transpose_ffi_impl(
         values_tangent.typed_data(),
         values_tangent_buffer->typed_data(),
         xi_tangent->typed_data(),
+        k,
         n_points,
         n_levels,
         n_cov,
@@ -289,159 +278,3 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<U32>>() // levels
         .Attr<uint32_t>("n_initial") // n_initial
 );
-
-
-// Error refine_jvp_cov_xla(
-//     cudaStream_t stream,
-//     Buffer<F32> points, // (N, d) in topological order
-//     Buffer<U32> offsets, // (L,) first entry is number of initial points
-//     Buffer<U32> neighbors, // (N, k) in original order, initial points not used
-//     Buffer<F32> cov_bins, // (R,)
-//     Buffer<F32> cov_vals, // (R,)
-//     Buffer<F32> initial_values, // (N0,)
-//     Buffer<F32> xi, // (N,) the first N0 are not used
-//     Buffer<F32> cov_vals_tangent, // (R,)
-//     ResultBuffer<F32> values_tangent // (N,)
-// ) {
-//     size_t n_points = points.dimensions()[0];
-//     size_t n_dim = points.dimensions()[1];
-//     size_t n_levels = offsets.dimensions()[0];
-//     size_t n_cov = cov_bins.dimensions()[0];
-//     size_t k = neighbors.dimensions()[1];
-
-//     if ((k < 2) || (k > 8)) return Error::InvalidArgument("only compiled for 2 <= k <= 8");
-//     if (n_dim > 3) return Error::InvalidArgument("only compiled for 2 <= n_dim <= 3");
-
-//     decltype(&refine_jvp_cov<1,1>) dispatch = nullptr;
-//     DISPATCH(dispatch, refine_jvp_cov);
-//     dispatch(
-//         stream,
-//         points.typed_data(),
-//         offsets.typed_data(),
-//         neighbors.typed_data(), 
-//         cov_bins.typed_data(),
-//         cov_vals.typed_data(),
-//         initial_values.typed_data(),
-//         xi.typed_data(),
-//         cov_vals_tangent.typed_data(),
-//         values_tangent->typed_data(),
-//         n_points,
-//         n_levels,
-//         n_cov
-//     );
-
-//     return Error::Success();
-// }
-
-// XLA_FFI_DEFINE_HANDLER_SYMBOL(
-//     refine_jvp_cov_bind, refine_jvp_cov_xla,
-//     Ffi::Bind()
-//         .Ctx<PlatformStream<cudaStream_t>>()
-//         .Arg<Buffer<F32>>() // points
-//         .Arg<Buffer<U32>>() // offsets
-//         .Arg<Buffer<U32>>() // neighbors
-//         .Arg<Buffer<F32>>() // cov_bins
-//         .Arg<Buffer<F32>>() // cov_vals
-//         .Arg<Buffer<F32>>() // initial_values
-//         .Arg<Buffer<F32>>() // xi
-//         .Arg<Buffer<F32>>() // cov_vals_tangent
-//         .Ret<Buffer<F32>>() // values_tangent
-// );
-
-// Error query_coarse_neighbors_xla(
-//     cudaStream_t stream,
-//     Buffer<F32> points, // (N, d)
-//     Buffer<S8> split_dims, // (N,) split dimensions
-//     ResultBuffer<U32> neighbors // (N, k)
-// ) {
-//     size_t n_points = points.dimensions()[0];
-//     size_t n_dim = points.dimensions()[1];
-//     size_t k = neighbors->dimensions()[1];
-
-//     if (k > 16) return Error::InvalidArgument("only compiled for k <= 16");
-
-//     if (n_dim == 1) {
-//         query_coarse_neighbors<16, 1>(stream, points.typed_data(), split_dims.typed_data(), neighbors->typed_data(), n_points, k);
-//     } else if (n_dim == 2) {
-//         query_coarse_neighbors<16, 2>(stream, points.typed_data(), split_dims.typed_data(), neighbors->typed_data(), n_points, k);
-//     } else if (n_dim == 3) {
-//         query_coarse_neighbors<16, 3>(stream, points.typed_data(), split_dims.typed_data(), neighbors->typed_data(), n_points, k);
-//     } else {
-//         return Error::InvalidArgument("only compiled for n_dim <= 3");
-//     }
-
-//     return Error::Success();
-// }
-
-// XLA_FFI_DEFINE_HANDLER_SYMBOL(
-//     query_coarse_neighbors_bind, query_coarse_neighbors_xla,
-//     Ffi::Bind()
-//         .Ctx<PlatformStream<cudaStream_t>>()
-//         .Arg<Buffer<F32>>() // points
-//         .Arg<Buffer<S8>>() // split_dims
-//         .Ret<Buffer<U32>>() // neighbors
-// );
-
-
-
-
-
-// Error refine_jvp_linear_xla(
-//     cudaStream_t stream,
-//     Buffer<F32> points, // (N, d) in topological order
-//     Buffer<U32> offsets, // (L,) first entry is number of initial points
-//     Buffer<U32> neighbors, // (N, k) in original order, initial points not used
-//     Buffer<F32> cov_bins, // (R,)
-//     Buffer<F32> cov_vals, // (R,)
-//     Buffer<F32> initial_values, // (N0,)
-//     Buffer<F32> xi, // (N,) the first N0 are not used
-//     Buffer<F32> initial_values_tangent, // (N0,)
-//     Buffer<F32> xi_tangent, // (N,) the first N0 are not used
-//     ResultBuffer<F32> values, // (N,)
-//     ResultBuffer<F32> values_tangent // (N,)
-// ) {
-//     size_t n_points = points.dimensions()[0];
-//     size_t n_dim = points.dimensions()[1];
-//     size_t n_levels = offsets.dimensions()[0];
-//     size_t n_cov = cov_bins.dimensions()[0];
-//     size_t k = neighbors.dimensions()[1];
-
-//     decltype(&refine_jvp_linear<1,1>) dispatch = nullptr;
-//     DISPATCH(dispatch, refine_jvp_linear);
-//     dispatch(
-//         stream,
-//         points.typed_data(),
-//         offsets.typed_data(),
-//         neighbors.typed_data(), 
-//         cov_bins.typed_data(),
-//         cov_vals.typed_data(),
-//         initial_values.typed_data(),
-//         xi.typed_data(),
-//         initial_values_tangent.typed_data(),
-//         xi_tangent.typed_data(),
-//         values->typed_data(),
-//         values_tangent->typed_data(),
-//         n_points,
-//         n_levels,
-//         n_cov
-//     );
-
-//     return Error::Success();
-// }
-
-// XLA_FFI_DEFINE_HANDLER_SYMBOL(
-//     refine_jvp_linear_bind, refine_jvp_linear_xla,
-//     Ffi::Bind()
-//         .Ctx<PlatformStream<cudaStream_t>>()
-//         .Arg<Buffer<F32>>() // points
-//         .Arg<Buffer<U32>>() // offsets
-//         .Arg<Buffer<U32>>() // neighbors
-//         .Arg<Buffer<F32>>() // cov_bins
-//         .Arg<Buffer<F32>>() // cov_vals
-//         .Arg<Buffer<F32>>() // initial_values
-//         .Arg<Buffer<F32>>() // xi
-//         .Arg<Buffer<F32>>() // initial_values_tangent
-//         .Arg<Buffer<F32>>() // xi_tangent
-//         .Ret<Buffer<F32>>() // values
-//         .Ret<Buffer<F32>>() // values_tangent
-// );

@@ -103,25 +103,20 @@ def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi)
 
 # ========== refine_linear primitive ==========
 
-# @trace("refine_linear")
 def refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi):
     return refine_linear_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_cholesky, xi)
 
-# @trace("refine_linear_impl")
 def refine_linear_impl(*args):
     return jax.ffi.ffi_call(
         "hugegp_cuda_refine_ffi", jax.ShapeDtypeStruct(args[6].shape, jnp.float32)
     )(*args)
 
-# @trace("refine_linear_abstract_eval")
 def refine_linear_abstract_eval(*args):
     return ShapedArray(args[6].shape, jnp.float32)
 
-# @trace("refine_linear_lowering")
 def refine_linear_lowering(ctx, *args):
     return jax.ffi.ffi_lowering("hugegp_cuda_refine_ffi")(ctx, *args)
 
-# @trace("refine_linear_value_and_jvp")
 def refine_linear_value_and_jvp(primals, tangents):
     if any(type(t) is not ad.Zero for t in tangents[:6]):
         raise NotImplementedError(
@@ -133,7 +128,6 @@ def refine_linear_value_and_jvp(primals, tangents):
     tangents_out = refine_linear(*primals[:6], *tangents[6:])
     return primals_out, tangents_out
 
-# @trace("refine_linear_transpose_rule")
 def refine_linear_transpose_rule(tangents_out, *primals):
     p, n, o, cb, cv, ic, x = primals
     dv = tangents_out
@@ -150,7 +144,6 @@ def refine_linear_transpose_rule(tangents_out, *primals):
     dv_buffer, dx = refine_linear_transpose(p, n, o, cb, cv, ic, dv)
     return None, None, None, None, None, None, dx
 
-# @trace("refine_linear_batch")
 def refine_linear_batch(vector_args, batch_axes):
     p, n, o, cb, cv, ic, x = vector_args
     pa, oa, na, cba, cva, ica, xa = batch_axes

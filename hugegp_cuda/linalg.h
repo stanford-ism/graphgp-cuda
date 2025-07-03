@@ -4,22 +4,21 @@
 #include <cuda_runtime.h>
 
 // convenience copy function
-template <int n>
 __forceinline__ __device__ void vec_copy(
     const float* a, // (n,)
-    float* b // (n,)
+    float* b, // (n,)
+    int n
 ) {
     for (int i = 0; i < n; ++i) {
         b[i] = a[i];
     }
 }
 
-
 // vector dot product
-template <int n>
 __forceinline__ __device__ float dot(
     const float* a, // (n,)
-    const float* b // (n,)
+    const float* b, // (n,)
+    int n
 ) {
     float sum = 0.0f;
     for (int i = 0; i < n; ++i) {
@@ -29,11 +28,13 @@ __forceinline__ __device__ float dot(
 }
 
 // multiply C = A B
-template <int n, int p, int m>
 __forceinline__ __device__ void matmul(
     const float* A, // (n, p)
     const float* B, // (p, m)
-    float* C // (n, m)
+    float* C, // (n, m)
+    int n,
+    int p,
+    int m
 ) {
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < m; ++j) {
@@ -46,9 +47,9 @@ __forceinline__ __device__ void matmul(
 }
 
 // compute the Cholesky decomposition L L.T = A, assuming triangular matrix order and modifying A in place
-template <int n>
 __forceinline__ __device__ void cholesky(
-    float* A // (n, n) lower triangular so actually n * (n + 1) / 2 entries
+    float* A, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
+    int n
 ) {
     for (int i = 0; i < n; ++i) {
         // off-diagonal elements
@@ -68,11 +69,11 @@ __forceinline__ __device__ void cholesky(
     }
 }
 
-// solve L X = B given lower triangular L
-template <int n, int m>
 __forceinline__ __device__ void solve_cholesky_forward(
     const float* L, // (n, n)
-    float* B // (n, m)
+    float* B, // (n, m)
+    int n,
+    int m
 ) {
 
     // Forward substitution
@@ -88,10 +89,11 @@ __forceinline__ __device__ void solve_cholesky_forward(
 }
 
 // solve L.T X = B given lower triangular L
-template <int n, int m>
 __forceinline__ __device__ void solve_cholesky_backward(
     const float* L, // (n, n)
-    float* B // (n, m)
+    float* B, // (n, m)
+    int n,
+    int m
 ) {
     // Backward substitution
     for (int i = n; i-- > 0;) {
@@ -106,71 +108,16 @@ __forceinline__ __device__ void solve_cholesky_backward(
 }
 
 // solve A X = B given L, the Cholesky decomposition of A, assuming triangular matrix order and modifying B in place
-template <int n, int m>
 __forceinline__ __device__ void solve_cholesky(
     const float* L, // (n, n)
-    float* B // (n, m)
+    float* B, // (n, m)
+    int n,
+    int m
 ) {
-    solve_cholesky_forward<n, m>(L, B);
-    solve_cholesky_backward<n, m>(L, B);
+    solve_cholesky_forward(L, B, n, m);
+    solve_cholesky_backward(L, B, n, m);
 }
 
-
-// compute the Cholesky decomposition L L.T = A, assuming a full matrix and storing L separately
-template <int n>
-__forceinline__ __device__ void cholesky_full_pure(
-    const float* A, // (n, n)
-    float* L // (n, n)
-) {
-    for (int i = 0; i < n; ++i) {
-        // off-diagonal elements
-        for (int j = 0; j < i; ++j) {
-            float sum = 0.0f;
-            for (int k = 0; k < j; ++k) {
-                sum += L[i * n + k] * L[j * n + k];
-            }
-            L[i * n + j] = (A[i * n + j] - sum) / L[j * n + j];
-        }
-        // diagonal elements
-        float sum = 0.0f;
-        for (int j = 0; j < i; ++j) {
-            sum += L[i * n + j] * L[i * n + j];
-        }
-        L[i * n + i] = sqrtf(A[i * n + i] - sum);
-    }
-}
-
-// solve A X = B given L, the Cholesky decomposition of A, assuming a full matrix and storing X separately
-template <int n, int m>
-__forceinline__ __device__ void solve_cholesky_full_pure(
-    const float* L, // (n, n)
-    const float* B, // (n, m)
-    float* X // (n, m)
-) {
-    
-    // Forward substitution
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < m; ++j) {
-            X[i * m + j] = B[i * m + j];
-            for (int k = 0; k < i; ++k) {
-                X[i * m + j] -= L[i * n + k] * X[k * m + j];
-            }
-            X[i * m + j] /= L[i * n + i];
-        }
-    }
-
-    // Backward substitution
-    for (int i = n; i-- > 0;) {
-        for (int k = i + 1; k < n; ++k) {
-            for (int j = 0; j < m; ++j) {
-                X[i * m + j] -= L[k * n + i] * X[k * m + j];
-            }
-        }
-        for (int j = 0; j < m; ++j) {
-            X[i * m + j] /= L[i * n + i];
-        }
-    }
-}
 
 __global__ void batched_matvec_kernel(
     const float* A, // (B, n, n)
