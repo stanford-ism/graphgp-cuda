@@ -46,6 +46,24 @@ __forceinline__ __device__ void matmul(
     }
 }
 
+// multiply C = L B
+__forceinline__ __device__ void matmul_tri(
+    const float* L, // (n, n) lower triangular
+    const float* B, // (n, m)
+    float* C, // (n, m)
+    int n,
+    int m
+) {
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < m; ++j) {
+            C[i * m + j] = 0.0f;
+            for (int k = 0; k <= i; ++k) {
+                C[i * m + j] += L[tri(i, k)] * B[k * m + j];
+            }
+        }
+    }
+}
+
 // compute the Cholesky decomposition L L.T = A, assuming triangular matrix order and modifying A in place
 __forceinline__ __device__ void cholesky(
     float* A, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
@@ -66,6 +84,52 @@ __forceinline__ __device__ void cholesky(
             sum += A[tri(i, j)] * A[tri(i, j)];
         }
         A[tri(i, i)] = sqrtf(A[tri(i, i)] - sum);
+    }
+}
+
+// compute L, dA -> dL in-place, where A is SPD and all are lower-triangular
+__forceinline__ __device__ void cholesky_jvp(
+    const float *L,
+    float *dA,
+    int n
+) {
+    for (int i = 0; i < n; ++i) {
+        // off-diagonal elements
+        for (int j = 0; j < i; ++j) {
+            float sum = 0.0f;
+            for (int k = 0; k < j; ++k) {
+                sum += L[tri(i, k)] * dA[tri(j, k)] + dA[tri(i, k)] * L[tri(j, k)];
+            }
+            sum += L[tri(i, j)] * dA[tri(j, j)];
+            dA[tri(i, j)] = (dA[tri(i, j)] - sum) / L[tri(j, j)];
+        }
+        // diagonal element
+        float sum = 0.0f;
+        for (int j = 0; j < i; ++j) {
+            sum += L[tri(i, j)] * dA[tri(i, j)];
+        }
+        dA[tri(i, i)] = ((dA[tri(i, i)] / 2.0f) - sum) / L[tri(i, i)];
+    }
+}
+
+// compute L, dL -> dA in-place, where all are lower-triangular
+__forceinline__ __device__ void cholesky_vjp(
+    const float *L,
+    float *dL,
+    int n
+) {
+    for (int i = n; i-- > 0;) {
+        for (int j = i + 1; j-- > 0;) {
+            float sum = 0.0f;
+            for (int k = j + 1; k <= i; ++k) {
+                sum += dL[tri(i, k)] * L[tri(k, j)];
+            }
+            for (int k = i + 1; k < n; ++k) {
+                // same as above just access lower triangular for dL_ik when k > i
+                sum += dL[tri(k, i)] * L[tri(k, j)];
+            }
+            dL[tri(i, j)] = ((dL[tri(i, j)] / 2.0f) - sum) * L[tri(j, j)];
+        }
     }
 }
 
@@ -117,6 +181,8 @@ __forceinline__ __device__ void solve_cholesky(
     solve_cholesky_forward(L, B, n, m);
     solve_cholesky_backward(L, B, n, m);
 }
+
+
 
 
 __global__ void batched_matvec_kernel(

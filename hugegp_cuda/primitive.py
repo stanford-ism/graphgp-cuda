@@ -269,15 +269,3 @@ def refine_linear_transpose_batch(vector_args, batch_axes):
     # call the primitive with the batched arguments
     return refine_linear_transpose(p, n, o, cb, cv, ic, v), (0, 0)
 
-
-# ============ query_coarse_neighbors primitive =============
-
-
-# def query_coarse_neighbors(points, split_dims, k):
-#     call = jax.ffi.ffi_call(
-#         "hugegp_cuda_query_coarse_neighbors_ffi",
-#         jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
-#     )
-#     neighbors = call(points, split_dims)
-#     return neighbors
-

@@ -120,6 +120,74 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // values
 );
 
+Error refine_nonlinear_jvp_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d) in topological order
+    Buffer<U32> neighbors, // (N, k) in original order, initial points not used
+    Buffer<U32> offsets, // (L,) first entry is number of initial points
+    Buffer<F32> cov_bins, // (R,)
+    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> initial_cholesky, // (B1, B2, ..., N0, N0)
+    Buffer<F32> xi, // (B1, B2, ..., N)
+    Buffer<F32> cov_vals_tangent,
+    Buffer<F32> initial_cholesky_tangent,
+    Buffer<F32> xi_tangent,
+    ResultBuffer<F32> values, // (B1, B2, ..., N)
+    ResultBuffer<F32> values_tangent
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    // handle both unbatched and arbitrarily batched cases
+    size_t n_batches = 1;
+    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= cov_vals.dimensions()[i];
+    }
+
+    decltype(&refine<1,1>) dispatch = nullptr;
+    DISPATCH(dispatch, refine);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(), 
+        offsets.typed_data(),
+        cov_bins.typed_data(),
+        cov_vals.typed_data(),
+        initial_cholesky.typed_data(),
+        xi.typed_data(),
+        values->typed_data(),
+        k,
+        n_points,
+        n_levels,
+        n_cov,
+        n_batches
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_nonlinear_jvp_ffi, refine_nonlinear_jvp_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<U32>>() // neighbors
+        .Arg<Buffer<U32>>() // offsets
+        .Arg<Buffer<F32>>() // cov_bins
+        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // initial_cholesky
+        .Arg<Buffer<F32>>() // xi
+        .Arg<Buffer<F32>>() // cov_vals_tangent
+        .Arg<Buffer<F32>>() // initial_cholesky_tangent
+        .Arg<Buffer<F32>>() // xi_tangent
+        .Ret<Buffer<F32>>() // values
+        .Ret<Buffer<F32>>() // values_tangent
+);
+
 
 Error refine_linear_transpose_ffi_impl(
     cudaStream_t stream,
