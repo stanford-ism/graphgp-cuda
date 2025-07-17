@@ -10,13 +10,14 @@
 template <int MAX_K, int N_DIM>  
 __global__ void refine_linear_transpose_kernel(
     const float *points, // (N, d)
-    const uint32_t *neighbors, // (N, k)
+    const uint32_t *neighbors, // (N - N0, k)
     const float *cov_bins, // (R,)
     const float *cov_vals, // (B, R)
     float *values_tangent, // (B, N)
-    float *xi_tangent, // (B, N)
+    float *xi_tangent, // (B, N - N0)
     int k, 
     size_t n_points,
+    size_t n_initial,
     size_t n_cov,
     size_t n_batches, // number of batches, affects cov_vals, values_tangent, and xi_tangent
     size_t start_idx, // = offsets[level]
@@ -32,7 +33,7 @@ __global__ void refine_linear_transpose_kernel(
     // batched memory access
     const float *b_cov_vals = cov_vals + b * n_cov;
     float *b_values_tangent = values_tangent + b * n_points;
-    float *b_xi_tangent = xi_tangent + b * n_points;
+    float *b_xi_tangent = xi_tangent + b * (n_points - n_initial);
 
     // define working variables, these should fit on register
     float pts[(MAX_K + 1) * N_DIM]; // fine point + K coarse points
@@ -42,7 +43,7 @@ __global__ void refine_linear_transpose_kernel(
     // load neighbor points
     size_t k_coarse = 0;
     for (int i = 0; i < k; ++i) {
-        size_t neighbor_idx = neighbors[idx * k + i];
+        size_t neighbor_idx = neighbors[(idx - n_initial) * k + i];
         if (neighbor_idx < start_idx) {
             k_coarse++; // coarse should all be before fine
         } else {
@@ -62,13 +63,13 @@ __global__ void refine_linear_transpose_kernel(
     cov_lookup_matrix<N_DIM>(pts, cov_bins, b_cov_vals, mat, k + 1, n_cov); // joint covariance
     cholesky(mat, k + 1); // L
     matmul(mat + tri(k, 0), &fine_value_tangent, vec, k + 1, 1, 1);
-    atomicAdd(b_xi_tangent + idx, vec[k]);
+    atomicAdd(b_xi_tangent + (idx - n_initial), vec[k]);
     for (int i = k_coarse; i < k; ++i) {
-        atomicAdd(b_xi_tangent + neighbors[idx * k + i], vec[i]);
+        atomicAdd(b_xi_tangent + neighbors[(idx - n_initial) * k + i] - n_initial, vec[i]);
     }
     solve_cholesky_backward(mat, vec, k_coarse, 1); // (Lcc^T)^-1
     for (int i = 0; i < k_coarse; ++i) {
-        atomicAdd(b_values_tangent + neighbors[idx * k + i], vec[i]);
+        atomicAdd(b_values_tangent + neighbors[(idx - n_initial) * k + i], vec[i]);
     }
 }
 
@@ -80,12 +81,13 @@ __host__ void refine_linear_transpose(
     const uint32_t *offsets,
     const float *cov_bins,
     const float *cov_vals,
-    const float *initial_cholesky,
     const float *values_tangent,
     float *values_tangent_buffer,
+    float *initial_values_tangent,
     float *xi_tangent,
     int k,
     size_t n_points,
+    size_t n_initial,
     size_t n_levels,
     size_t n_cov,
     size_t n_batches // batch dim only affects cov_vals, values_tangent, and all output buffers
@@ -102,7 +104,7 @@ __host__ void refine_linear_transpose(
 
     // initialize output arrays
     cudaMemcpyAsync(values_tangent_buffer, values_tangent, n_batches * n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    cudaMemsetAsync(xi_tangent, 0, n_batches * n_points * sizeof(float), stream);
+    cudaMemsetAsync(xi_tangent, 0, n_batches * (n_points - n_initial) * sizeof(float), stream);
 
     // walk backwards through levels and compute tangents
     for (size_t level = n_levels; level-- > 0;) {
@@ -111,15 +113,15 @@ __host__ void refine_linear_transpose(
         n_threads = (end_idx - start_idx) * n_batches;
         n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
         refine_linear_transpose_kernel<MAX_K, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, neighbors, cov_bins, cov_vals, values_tangent_buffer, xi_tangent, k, n_points, n_cov, n_batches, start_idx, n_threads
+            points, neighbors, cov_bins, cov_vals, values_tangent_buffer, xi_tangent, k, n_points, n_initial, n_cov, n_batches, start_idx, n_threads
         );
     }
 
-    // multiply initial_cholesky transpose by values_tangent_buffer to get initial values_tangent
-    n_threads = n_batches * offsets_host[0];
+    // copy initial values_tangent to output
+    n_threads = n_batches * n_initial;
     n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    batched_transpose_matvec_kernel<<<n_blocks, threads_per_block, 0, stream>>>(
-        initial_cholesky, values_tangent_buffer, xi_tangent, n_batches, offsets_host[0], n_points
+    batch_extract<<<n_blocks, threads_per_block, 0, stream>>>(
+        initial_values_tangent, values_tangent_buffer, n_batches, n_initial, n_points
     );
 
     free(offsets_host);

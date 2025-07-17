@@ -54,6 +54,32 @@ __forceinline__ __device__ float compute_square_distance(
     return dist;
 }
 
+// concatenate (B, N0) and (B, N1) into (B, N0 + N1)
+template <typename T>
+__global__ void batch_concat(T *dest, const T *src1, const T *src2, size_t n_batches, size_t n0, size_t n1) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t n = n0 + n1;
+    size_t b = tid / n; // batch index
+    size_t i = tid % n; // index within batch
+    if (b >= n_batches) return;
+    if (i < n0) {
+        dest[b * n + i] = src1[b * n0 + i];
+    } else {
+        dest[b * n + i] = src2[b * n1 + (i - n0)];
+    }
+}
+
+// extract (B, N0) from (B, N) where N0 <= N
+template <typename T>
+__global__ void batch_extract(T *dest, const T *src, size_t n_batches, size_t n0, size_t n) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t b = tid / n0; // batch index
+    size_t i = tid % n0; // index within batch
+    if (b >= n_batches) return;
+    dest[b * n0 + i] = src[b * n + i];
+}
+
+
 // copy from (B, N0) to (B, N) where N0 <= N
 template <typename T>
 __global__ void batch_copy(T *dest, const T *src,  size_t n_batches, size_t n0, size_t n) {
