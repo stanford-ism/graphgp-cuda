@@ -6,21 +6,24 @@ import jax.numpy as jnp
 
 import numpy as np
 
-from jax import lax
 from jax.core import ShapedArray
 from jax.extend.core import Primitive
 from jax.interpreters import mlir, batching, ad
 
 
 # Define custom primitive, the "refine" function is exposed
-refine_linear_p = Primitive("hugegp_cuda_refine_linear")
+refine_p = Primitive("hugegp_cuda_refine")
 refine_linear_transpose_p = Primitive("hugegp_cuda_refine_linear_transpose")
 
 
-def _initialize():
+def initialize():
     # Register CUDA bindings as FFI targets
-    so_path = next(Path(__file__).parent.glob("libhugegp_cuda*"))
-    hugegp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
+    try:
+        so_path = next(Path(__file__).parent.glob("libhugegp_cuda*"))
+        hugegp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
+    except (StopIteration, OSError) as e:
+        raise RuntimeError(f"Failed to load hugegp_cuda library: {e}")
+    
     jax.ffi.register_ffi_target(
         "hugegp_cuda_refine_ffi",
         jax.ffi.pycapsule(hugegp_cuda_lib.refine_ffi),
@@ -32,28 +35,18 @@ def _initialize():
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_query_preceding_neighbors_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.query_preceding_neighbors_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "hugegp_cuda_query_preceding_neighbors_alt_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.query_preceding_neighbors_alt_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "hugegp_cuda_compute_levels_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.compute_levels_ffi),
+        "hugegp_cuda_compute_depths_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_ffi),
         platform="gpu",
     )
 
-    # Register refine_linear primitive
-    refine_linear_p.def_impl(refine_linear_impl)
-    refine_linear_p.def_abstract_eval(refine_linear_abstract_eval)
-    batching.primitive_batchers[refine_linear_p] = refine_linear_batch
-    mlir.register_lowering(refine_linear_p, refine_linear_lowering, platform="gpu")  # type: ignore
-    ad.primitive_jvps[refine_linear_p] = refine_linear_value_and_jvp
-    ad.primitive_transposes[refine_linear_p] = refine_linear_transpose_rule
+    # Register refine primitive
+    refine_p.def_impl(refine_impl)
+    refine_p.def_abstract_eval(refine_abstract_eval)
+    batching.primitive_batchers[refine_p] = refine_batch
+    mlir.register_lowering(refine_p, refine_lowering, platform="gpu")  # type: ignore
+    ad.primitive_jvps[refine_p] = refine_value_and_jvp
+    ad.primitive_transposes[refine_p] = refine_transpose_rule
 
     # Register refine_linear_transpose primitive
     refine_linear_transpose_p.def_impl(refine_linear_transpose_impl)
@@ -69,48 +62,14 @@ def _initialize():
     refine_linear_transpose_p.multiple_results = True
 
 
-# ========== exposed functions ==========
-
-
-def compute_levels(neighbors, *, n_initial):
-    call = jax.ffi.ffi_call(
-        "hugegp_cuda_compute_levels_ffi",
-        jax.ShapeDtypeStruct((len(neighbors),), jnp.uint32),
-    )
-    levels = call(neighbors, n_initial=np.uint32(n_initial))
-    return levels
-
-
-def query_preceding_neighbors(points, split_dims, k):
-    call = jax.ffi.ffi_call(
-        "hugegp_cuda_query_preceding_neighbors_ffi",
-        jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
-    )
-    neighbors = call(points, split_dims)
-    return neighbors
-
-
-def query_preceding_neighbors_alt(points, split_dims, k):
-    call = jax.ffi.ffi_call(
-        "hugegp_cuda_query_preceding_neighbors_alt_ffi",
-        jax.ShapeDtypeStruct((len(points), k), jnp.uint32),
-    )
-    neighbors = call(points, split_dims)
-    return neighbors
+# ================== refine primitive ====================
 
 
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-    return refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+    return refine_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
 
 
-# ========== refine_linear primitive ==========
-
-
-def refine_linear(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-    return refine_linear_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
-
-
-def refine_linear_impl(*args):
+def refine_impl(*args):
     return jax.ffi.ffi_call(
         "hugegp_cuda_refine_ffi",
         jax.ShapeDtypeStruct(
@@ -119,25 +78,25 @@ def refine_linear_impl(*args):
     )(*args)
 
 
-def refine_linear_abstract_eval(*args):
+def refine_abstract_eval(*args):
     return ShapedArray(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32)
 
 
-def refine_linear_lowering(ctx, *args):
+def refine_lowering(ctx, *args):
     return jax.ffi.ffi_lowering("hugegp_cuda_refine_ffi")(ctx, *args)
 
 
-def refine_linear_value_and_jvp(primals, tangents):
+def refine_value_and_jvp(primals, tangents):
     if any(type(t) is not ad.Zero for t in tangents[:5]):
-        raise NotImplementedError("Differentiation for refine_linear only supported for xi.")
+        raise NotImplementedError("Differentiation for refine only supported for xi.")
     if any(type(t) is ad.Zero for t in tangents[5:]):
         raise NotImplementedError("Not differentiated with respect to xi?")
-    primals_out = refine_linear(*primals)
-    tangents_out = refine_linear(*primals[:5], *tangents[5:])
+    primals_out = refine(*primals)
+    tangents_out = refine(*primals[:5], *tangents[5:])
     return primals_out, tangents_out
 
 
-def refine_linear_transpose_rule(tangents_out, *primals):
+def refine_transpose_rule(tangents_out, *primals):
     p, n, o, cb, cv, iv, x = primals
     dv = tangents_out
 
@@ -154,7 +113,7 @@ def refine_linear_transpose_rule(tangents_out, *primals):
     return None, None, None, None, None, div, dx
 
 
-def refine_linear_batch(vector_args, batch_axes):
+def refine_batch(vector_args, batch_axes):
     p, n, o, cb, cv, iv, x = vector_args
     pa, oa, na, cba, cva, iva, xa = batch_axes
 
@@ -185,16 +144,14 @@ def refine_linear_batch(vector_args, batch_axes):
         x = batching.moveaxis(x, xa, 0)
 
     # call the primitive with the batched arguments
-    return refine_linear(p, n, o, cb, cv, iv, x), 0
+    return refine(p, n, o, cb, cv, iv, x), 0
 
 
 # ========== refine_linear_transpose primitive ==========
 
 
 def refine_linear_transpose(points, neighbors, offsets, cov_bins, cov_vals, values):
-    return refine_linear_transpose_p.bind(
-        points, neighbors, offsets, cov_bins, cov_vals, values
-    )
+    return refine_linear_transpose_p.bind(points, neighbors, offsets, cov_bins, cov_vals, values)
 
 
 def refine_linear_transpose_impl(*args):
@@ -202,7 +159,9 @@ def refine_linear_transpose_impl(*args):
         "hugegp_cuda_refine_linear_transpose_ffi",
         (
             jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
-            jax.ShapeDtypeStruct(args[5].shape[:-1] + (args[0].shape[0] - args[1].shape[0],), jnp.float32),
+            jax.ShapeDtypeStruct(
+                args[5].shape[:-1] + (args[0].shape[0] - args[1].shape[0],), jnp.float32
+            ),
             jax.ShapeDtypeStruct(args[5].shape[:-1] + (args[1].shape[0],), jnp.float32),
         ),
     )(*args)
@@ -221,14 +180,14 @@ def refine_linear_transpose_lowering(ctx, *args):
 
 
 def refine_linear_transpose_value_and_jvp(primals, tangents):
-    if any(type(t) is not ad.Zero for t in tangents[:6]):
+    if any(type(t) is not ad.Zero for t in tangents[:5]):
         raise NotImplementedError(
             "Differentiation for refine_linear_transpose only supported for values."
         )
-    if type(tangents[6]) is ad.Zero:
+    if type(tangents[5]) is ad.Zero:
         raise NotImplementedError("Not differentiated with respect to values?")
     primals_out = refine_linear_transpose(*primals)
-    tangents_out = refine_linear_transpose(*primals[:6], *tangents[6:])
+    tangents_out = refine_linear_transpose(*primals[:5], *tangents[5:])
     return primals_out, tangents_out
 
 
@@ -245,7 +204,7 @@ def refine_linear_transpose_transpose_rule(tangents_out, *primals):
     if any(type(t) is ad.Zero for t in [div, dx]):
         raise NotImplementedError("Not differentiated with respect to initial_values and xi?")
 
-    dv = refine_linear(p, n, o, cb, cv, div, dx)
+    dv = refine(p, n, o, cb, cv, div, dx)
     return None, None, None, None, None, dv
 
 
@@ -275,4 +234,16 @@ def refine_linear_transpose_batch(vector_args, batch_axes):
         v = batching.moveaxis(v, va, 0)
 
     # call the primitive with the batched arguments
-    return refine_linear_transpose(p, n, o, cb, cv, v), (0, 0)
+    return refine_linear_transpose(p, n, o, cb, cv, v), (0, 0, 0)
+
+
+# ========== other ==========
+
+
+def compute_depths(neighbors, *, n0):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_compute_depths_ffi",
+        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+    )
+    depths = call(neighbors, n0=np.int32(n0))
+    return depths

@@ -1,16 +1,12 @@
 from .primitive import (
-    _initialize,
+    initialize,
     refine,
-    query_preceding_neighbors,
-    query_preceding_neighbors_alt,
-    compute_levels,
+    compute_depths,
 )
 
-_initialize()
+initialize()
 
 __all__ = [
     "refine",
-    "query_preceding_neighbors",
-    "query_preceding_neighbors_alt",
-    "compute_levels",
+    "compute_depths",
 ]

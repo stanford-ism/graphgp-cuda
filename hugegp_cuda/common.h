@@ -14,11 +14,11 @@ __forceinline__ __device__ int tri(int i, int j) {
 //     out[indices[tid]] += a[tid];
 // }
 
-__forceinline__ __device__ size_t searchsorted(const float* a, float v, size_t n) {
-    size_t left = 0;
-    size_t right = n;
+__forceinline__ __device__ int searchsorted(const float* a, float v, int n) {
+    int left = 0;
+    int right = n;
     while (left < right) {
-        size_t mid = left + (right - left) / 2;
+        int mid = left + (right - left) / 2;
         if (a[mid] < v) {
             left = mid + 1;
         } else {
@@ -34,7 +34,7 @@ __forceinline__ __device__ float compute_distance(
     const float* point_b // (d,)
 ) {
     float dist = 0.0f;
-    for (size_t i = 0; i < N_DIM; ++i) {
+    for (int i = 0; i < N_DIM; ++i) {
         float diff = point_a[i] - point_b[i];
         dist += diff * diff;
     }
@@ -55,26 +55,26 @@ __forceinline__ __device__ float compute_square_distance(
 }
 
 // concatenate (B, N0) and (B, N1) into (B, N0 + N1)
-template <typename T>
-__global__ void batch_concat(T *dest, const T *src1, const T *src2, size_t n_batches, size_t n0, size_t n1) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    size_t n = n0 + n1;
-    size_t b = tid / n; // batch index
-    size_t i = tid % n; // index within batch
-    if (b >= n_batches) return;
-    if (i < n0) {
-        dest[b * n + i] = src1[b * n0 + i];
-    } else {
-        dest[b * n + i] = src2[b * n1 + (i - n0)];
-    }
-}
+// template <typename T>
+// __global__ void batch_concat(T *dest, const T *src1, const T *src2, size_t n_batches, size_t n0, size_t n1) {
+//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+//     size_t n = n0 + n1;
+//     size_t b = tid / n; // batch index
+//     size_t i = tid % n; // index within batch
+//     if (b >= n_batches) return;
+//     if (i < n0) {
+//         dest[b * n + i] = src1[b * n0 + i];
+//     } else {
+//         dest[b * n + i] = src2[b * n1 + (i - n0)];
+//     }
+// }
 
 // extract (B, N0) from (B, N) where N0 <= N
 template <typename T>
-__global__ void batch_extract(T *dest, const T *src, size_t n_batches, size_t n0, size_t n) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    size_t b = tid / n0; // batch index
-    size_t i = tid % n0; // index within batch
+__global__ void batch_extract(T *dest, const T *src, int n_batches, int n0, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int b = tid / n0; // batch index
+    int i = tid % n0; // index within batch
     if (b >= n_batches) return;
     dest[b * n0 + i] = src[b * n + i];
 }
@@ -82,20 +82,20 @@ __global__ void batch_extract(T *dest, const T *src, size_t n_batches, size_t n0
 
 // copy from (B, N0) to (B, N) where N0 <= N
 template <typename T>
-__global__ void batch_copy(T *dest, const T *src,  size_t n_batches, size_t n0, size_t n) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    size_t b = tid / n0; // batch index
-    size_t i = tid % n0; // index within batch
+__global__ void batch_copy(T *dest, const T *src,  int n_batches, int n0, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int b = tid / n0; // batch index
+    int i = tid % n0; // index within batch
     if (b >= n_batches) return;
     dest[b * n + i] = src[b * n0 + i];
 }
 
 // set first N0 of (B, N) to value
 template <typename T>
-__global__ void batch_memset(T *dest, T value, size_t n_batches, size_t n0, size_t n) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    size_t b = tid / n0; // batch index
-    size_t i = tid % n0; // index within batch
+__global__ void batch_memset(T *dest, T value, int n_batches, int n0, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int b = tid / n0; // batch index
+    int i = tid % n0; // index within batch
     if (b >= n_batches) return;
     dest[b * n + i] = value;
 }

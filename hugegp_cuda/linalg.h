@@ -185,47 +185,47 @@ __forceinline__ __device__ void solve_cholesky(
 
 
 
-__global__ void batched_matvec_kernel(
-    const float* A, // (B, n, n)
-    const float* x, // (B, p)
-    float* y, // (B, p)
-    size_t n_batches,
-    size_t n,
-    size_t p // p >= n, will only use first n entries
-) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= n_batches * n) return;
+// __global__ void batched_matvec_kernel(
+//     const float* A, // (B, n, n)
+//     const float* x, // (B, p)
+//     float* y, // (B, p)
+//     size_t n_batches,
+//     size_t n,
+//     size_t p // p >= n, will only use first n entries
+// ) {
+//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+//     if (tid >= n_batches * n) return;
 
-    size_t b = tid / n; // batch index
-    size_t i = tid % n; // row index in y
+//     size_t b = tid / n; // batch index
+//     size_t i = tid % n; // row index in y
 
-    float sum = 0.0f;
-    for (size_t j = 0; j < n; ++j) {
-        sum += A[b * n * n + i * n + j] * x[b * p + j];
-    }
-    y[b * p + i] = sum;
-}
+//     float sum = 0.0f;
+//     for (size_t j = 0; j < n; ++j) {
+//         sum += A[b * n * n + i * n + j] * x[b * p + j];
+//     }
+//     y[b * p + i] = sum;
+// }
 
-__global__ void batched_transpose_matvec_kernel(
-    const float* A, // (B, n, n)
-    const float* x, // (B, p)
-    float* y, // (B, p)
-    size_t n_batches,
-    size_t n,
-    size_t p // p >= n, will only use first n entries
-) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= n_batches * n) return;
+// __global__ void batched_transpose_matvec_kernel(
+//     const float* A, // (B, n, n)
+//     const float* x, // (B, p)
+//     float* y, // (B, p)
+//     size_t n_batches,
+//     size_t n,
+//     size_t p // p >= n, will only use first n entries
+// ) {
+//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+//     if (tid >= n_batches * n) return;
 
-    size_t b = tid / n; // batch index
-    size_t i = tid % n; // row index in y
+//     size_t b = tid / n; // batch index
+//     size_t i = tid % n; // row index in y
 
-    float sum = 0.0f;
-    for (size_t j = 0; j < n; ++j) {
-        sum += A[b * n * n + j * n + i] * x[b * p + j]; // only difference is i <-> j from the above
-    }
-    y[b * p + i] = sum;
-}
+//     float sum = 0.0f;
+//     for (size_t j = 0; j < n; ++j) {
+//         sum += A[b * n * n + j * n + i] * x[b * p + j]; // only difference is i <-> j from the above
+//     }
+//     y[b * p + i] = sum;
+// }
 
 // apparently more numerically stable?
 

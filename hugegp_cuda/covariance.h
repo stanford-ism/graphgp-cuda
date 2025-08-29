@@ -42,26 +42,26 @@ __forceinline__ __device__ void cov_lookup_matrix(
     }
 }
 
-// compute two covariance matrices at the same time, useful for JVP
-template <int N_DIM>
-__forceinline__ __device__ void two_cov_lookup_matrix(
-    const float *points, // (n, d)
-    const float *cov_bins, // (R,)
-    const float *cov_vals_1, // (R,) first covariance values
-    const float *cov_vals_2,
-    float *out_1, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
-    float *out_2,
-    int n,
-    size_t n_cov
-) {
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j <= i; ++j) {
-            float r = compute_distance<N_DIM>(points + (i * N_DIM), points + (j * N_DIM));
-            out_1[tri(i, j)] = cov_lookup(r, cov_bins, cov_vals_1, n_cov);
-            out_2[tri(i, j)] = cov_lookup(r, cov_bins, cov_vals_2, n_cov);
-        }
-    }
-}
+// // compute two covariance matrices at the same time, useful for JVP
+// template <int N_DIM>
+// __forceinline__ __device__ void two_cov_lookup_matrix(
+//     const float *points, // (n, d)
+//     const float *cov_bins, // (R,)
+//     const float *cov_vals_1, // (R,) first covariance values
+//     const float *cov_vals_2,
+//     float *out_1, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
+//     float *out_2,
+//     int n,
+//     size_t n_cov
+// ) {
+//     for (int i = 0; i < n; ++i) {
+//         for (int j = 0; j <= i; ++j) {
+//             float r = compute_distance<N_DIM>(points + (i * N_DIM), points + (j * N_DIM));
+//             out_1[tri(i, j)] = cov_lookup(r, cov_bins, cov_vals_1, n_cov);
+//             out_2[tri(i, j)] = cov_lookup(r, cov_bins, cov_vals_2, n_cov);
+//         }
+//     }
+// }
 
 // template <int N_DIM>
 // __forceinline__ __device__ void cov_lookup_matrix_full(

@@ -13,7 +13,7 @@ execute_process(
 message(STATUS "XLA include directory: ${XLA_DIR}")
 
 # Set CUDA architecture
-set(CMAKE_CUDA_ARCHITECTURES native)
+set(CMAKE_CUDA_ARCHITECTURES "89;90")
 
 # Add the shared library target
 add_library(hugegp_cuda SHARED xla_bindings.cu)
