@@ -9,11 +9,14 @@ import numpy as np
 from jax.core import ShapedArray
 from jax.extend.core import Primitive
 from jax.interpreters import mlir, batching, ad
+from jax import lax
 
 
 # Define custom primitive, the "refine" function is exposed
 refine_p = Primitive("hugegp_cuda_refine")
 refine_linear_transpose_p = Primitive("hugegp_cuda_refine_linear_transpose")
+refine_nonlinear_jvp_p = Primitive("hugegp_cuda_refine_nonlinear_jvp")
+refine_nonlinear_vjp_p = Primitive("hugegp_cuda_refine_nonlinear_vjp")
 
 
 def initialize():
@@ -23,7 +26,7 @@ def initialize():
         hugegp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
     except (StopIteration, OSError) as e:
         raise RuntimeError(f"Failed to load hugegp_cuda library: {e}")
-    
+
     jax.ffi.register_ffi_target(
         "hugegp_cuda_refine_ffi",
         jax.ffi.pycapsule(hugegp_cuda_lib.refine_ffi),
@@ -32,6 +35,16 @@ def initialize():
     jax.ffi.register_ffi_target(
         "hugegp_cuda_refine_linear_transpose_ffi",
         jax.ffi.pycapsule(hugegp_cuda_lib.refine_linear_transpose_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_refine_nonlinear_jvp_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.refine_nonlinear_jvp_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_refine_nonlinear_vjp_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.refine_nonlinear_vjp_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
@@ -61,6 +74,28 @@ def initialize():
     ad.primitive_transposes[refine_linear_transpose_p] = refine_linear_transpose_transpose_rule
     refine_linear_transpose_p.multiple_results = True
 
+    # Register refine_nonlinear_jvp primitive
+    refine_nonlinear_jvp_p.def_impl(refine_nonlinear_jvp_impl)
+    refine_nonlinear_jvp_p.def_abstract_eval(refine_nonlinear_jvp_abstract_eval)
+    # batching.primitive_batchers[refine_nonlinear_jvp_p] = refine_nonlinear_jvp_batch
+    mlir.register_lowering(
+        refine_nonlinear_jvp_p,
+        refine_nonlinear_jvp_lowering,  # type: ignore
+        platform="gpu",
+    )
+    ad.primitive_transposes[refine_nonlinear_jvp_p] = refine_nonlinear_jvp_transpose_rule
+    refine_nonlinear_jvp_p.multiple_results = True
+
+    # Register refine_nonlinear_vjp primitive
+    refine_nonlinear_vjp_p.def_impl(refine_nonlinear_vjp_impl)
+    refine_nonlinear_vjp_p.def_abstract_eval(refine_nonlinear_vjp_abstract_eval)
+    mlir.register_lowering(
+        refine_nonlinear_vjp_p,
+        refine_nonlinear_vjp_lowering,  # type: ignore
+        platform="gpu",
+    )
+    refine_nonlinear_vjp_p.multiple_results = True
+
 
 # ================== refine primitive ====================
 
@@ -72,9 +107,7 @@ def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
 def refine_impl(*args):
     return jax.ffi.ffi_call(
         "hugegp_cuda_refine_ffi",
-        jax.ShapeDtypeStruct(
-            args[6].shape[:-1] + (args[0].shape[0],), jnp.float32
-        ),
+        jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
     )(*args)
 
 
@@ -87,12 +120,25 @@ def refine_lowering(ctx, *args):
 
 
 def refine_value_and_jvp(primals, tangents):
-    if any(type(t) is not ad.Zero for t in tangents[:5]):
-        raise NotImplementedError("Differentiation for refine only supported for xi.")
-    if any(type(t) is ad.Zero for t in tangents[5:]):
-        raise NotImplementedError("Not differentiated with respect to xi?")
-    primals_out = refine(*primals)
-    tangents_out = refine(*primals[:5], *tangents[5:])
+    if any(type(t) is not ad.Zero for t in tangents[:4]):
+        raise NotImplementedError(
+            "Differentiation for refine only supported for cov_vals, initial_values, and xi."
+        )
+
+    # handle ad.Zero for initial_values and xi
+    tangents = (
+        *tangents[:5],
+        lax.zeros_like_array(primals[5]) if type(tangents[5]) is ad.Zero else tangents[5],
+        lax.zeros_like_array(primals[6]) if type(tangents[6]) is ad.Zero else tangents[6],
+    )
+
+    if type(tangents[4]) is ad.Zero:  # linear case
+        primals_out = refine(*primals)
+        tangents_out = refine(*primals[:5], *tangents[5:])
+    else:  # nonlinear
+        primals_out = refine(*primals)
+        _, tangents_out = refine_nonlinear_jvp(*primals, *tangents[4:])
+        # even though can do x, dx -> y, dy in one pass, this way enables VJP via transpose
     return primals_out, tangents_out
 
 
@@ -145,6 +191,116 @@ def refine_batch(vector_args, batch_axes):
 
     # call the primitive with the batched arguments
     return refine(p, n, o, cb, cv, iv, x), 0
+
+
+# ========== refine_nonlinear_jvp primitive ===========
+
+
+def refine_nonlinear_jvp(
+    points,
+    neighbors,
+    offsets,
+    cov_bins,
+    cov_vals,
+    initial_values,
+    xi,
+    cov_vals_tangent,
+    initial_values_tangent,
+    xi_tangent,
+):
+    return refine_nonlinear_jvp_p.bind(
+        points,
+        neighbors,
+        offsets,
+        cov_bins,
+        cov_vals,
+        initial_values,
+        xi,
+        cov_vals_tangent,
+        initial_values_tangent,
+        xi_tangent,
+    )
+
+
+def refine_nonlinear_jvp_impl(*args):
+    return jax.ffi.ffi_call(
+        "hugegp_cuda_refine_nonlinear_jvp_ffi",
+        (
+            jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
+            jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
+        ),
+    )(*args)
+
+
+def refine_nonlinear_jvp_abstract_eval(*args):
+    return (
+        ShapedArray(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
+        ShapedArray(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
+    )
+
+
+def refine_nonlinear_jvp_lowering(ctx, *args):
+    return jax.ffi.ffi_lowering("hugegp_cuda_refine_nonlinear_jvp_ffi")(ctx, *args)
+
+
+def refine_nonlinear_jvp_transpose_rule(tangents_out, *primals):
+    p, n, o, cb, cv, iv, x, dcv_u, div_u, dx_u = primals
+    _, dv = tangents_out
+
+    # assert all(ad.is_undefined_primal(t) for t in [dcv, div, dx])
+    assert not any(ad.is_undefined_primal(t) for t in [p, n, o, cb, cv, iv, x])
+
+    values = refine(p, n, o, cb, cv, iv, x)
+    dv_buffer, dcv, div, dx = refine_nonlinear_vjp(p, n, o, cb, cv, iv, x, values, dv)
+    dcv = dcv if ad.is_undefined_primal(dcv_u) else None
+    div = div if ad.is_undefined_primal(div_u) else None
+    dx = dx if ad.is_undefined_primal(dx_u) else None
+    return None, None, None, None, None, None, None, dcv, div, dx
+
+
+# ========== refine_nonlinear_vjp primitive ==========
+
+
+def refine_nonlinear_vjp(
+    points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, values, values_tangent
+):
+    return refine_nonlinear_vjp_p.bind(
+        points,
+        neighbors,
+        offsets,
+        cov_bins,
+        cov_vals,
+        initial_values,
+        xi,
+        values,
+        values_tangent,
+    )
+
+def refine_nonlinear_vjp_impl(*args):
+    return jax.ffi.ffi_call(
+        "hugegp_cuda_refine_nonlinear_vjp_ffi",
+        (
+            jax.ShapeDtypeStruct(args[7].shape, jnp.float32),
+            jax.ShapeDtypeStruct(args[4].shape, jnp.float32),
+            jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
+            jax.ShapeDtypeStruct(args[6].shape, jnp.float32),
+        ),
+    )(*args)
+
+
+def refine_nonlinear_vjp_abstract_eval(*args):
+    return (
+        ShapedArray(args[7].shape, jnp.float32),
+        ShapedArray(args[4].shape, jnp.float32),
+        ShapedArray(args[5].shape, jnp.float32),
+        ShapedArray(args[6].shape, jnp.float32),
+    )
+
+
+def refine_nonlinear_vjp_lowering(ctx, *args):
+    return jax.ffi.ffi_lowering("hugegp_cuda_refine_nonlinear_vjp_ffi")(ctx, *args)
+
+
 
 
 # ========== refine_linear_transpose primitive ==========

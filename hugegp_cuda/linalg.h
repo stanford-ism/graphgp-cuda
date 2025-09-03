@@ -128,7 +128,7 @@ __forceinline__ __device__ void cholesky_vjp(
                 // same as above just access lower triangular for dL_ik when k > i
                 sum += dL[tri(k, i)] * L[tri(k, j)];
             }
-            dL[tri(i, j)] = ((dL[tri(i, j)] / 2.0f) - sum) * L[tri(j, j)];
+            dL[tri(i, j)] = ((dL[tri(i, j)] / 2.0f) - sum) / L[tri(j, j)];
         }
     }
 }
@@ -182,8 +182,23 @@ __forceinline__ __device__ void solve_cholesky(
     solve_cholesky_backward(L, B, n, m);
 }
 
-
-
+// multiply L B in-place
+__forceinline__ __device__ void apply_cholesky(
+    const float* L, // (n, n)
+    float* B, // (n, m)
+    int n,
+    int m
+) {
+    for (int i = n; i-- > 0;) {
+        for (int j = 0; j < m; ++j) {
+            float sum = 0.0f;
+            for (int k = 0; k <= i; ++k) {
+                sum += L[tri(i, k)] * B[k * m + j];
+            }
+            B[i * m + j] = sum;
+        }
+    }
+}
 
 // __global__ void batched_matvec_kernel(
 //     const float* A, // (B, n, n)

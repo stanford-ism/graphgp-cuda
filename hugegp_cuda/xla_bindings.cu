@@ -7,6 +7,8 @@
 
 #include "refine.h"
 #include "refine_linear_transpose.h"
+#include "refine_nonlinear_jvp.h"
+#include "refine_nonlinear_vjp.h"
 #include "query.h"
 #include "query_alt.h"
 #include "depth.h"
@@ -188,6 +190,156 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // xi_tangent
 );
 
+Error refine_nonlinear_jvp_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> neighbors, // (N - n0, k)
+    Buffer<S32> offsets, // (B,) marking the ends of each batch
+    Buffer<F32> cov_bins, // (R,)
+    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> initial_values, // (B1, B2, ..., n0)
+    Buffer<F32> xi, // (B1, B2, ..., N - n0)
+    Buffer<F32> cov_vals_tangent,
+    Buffer<F32> initial_values_tangent,
+    Buffer<F32> xi_tangent,
+    ResultBuffer<F32> values, // (B1, B2, ..., N)
+    ResultBuffer<F32> values_tangent
+) {
+    int n_points = points.dimensions()[0];
+    int n_dim = points.dimensions()[1];
+    int n_levels = offsets.dimensions()[0];
+    int n_cov = cov_bins.dimensions()[0];
+    int n0 = n_points - neighbors.dimensions()[0];
+    int k = neighbors.dimensions()[1];
+
+    // handle both unbatched and arbitrarily batched cases
+    size_t n_batches = 1;
+    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= cov_vals.dimensions()[i];
+    }
+
+    decltype(&refine_nonlinear_jvp<1,1>) dispatch = nullptr;
+    DISPATCH(dispatch, refine_nonlinear_jvp);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(), 
+        offsets.typed_data(),
+        cov_bins.typed_data(),
+        cov_vals.typed_data(),
+        initial_values.typed_data(),
+        xi.typed_data(),
+        cov_vals_tangent.typed_data(),
+        initial_values_tangent.typed_data(),
+        xi_tangent.typed_data(),
+        values->typed_data(),
+        values_tangent->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_cov,
+        n_batches
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_nonlinear_jvp_ffi, refine_nonlinear_jvp_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // cov_bins
+        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // initial_values
+        .Arg<Buffer<F32>>() // xi
+        .Arg<Buffer<F32>>() // cov_vals_tangent
+        .Arg<Buffer<F32>>() // initial_values_tangent
+        .Arg<Buffer<F32>>() // xi_tangent
+        .Ret<Buffer<F32>>() // values
+        .Ret<Buffer<F32>>() // values_tangent
+);
+
+Error refine_nonlinear_vjp_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> neighbors, // (N - n0, k)
+    Buffer<S32> offsets, // (B,) marking the ends of each batch
+    Buffer<F32> cov_bins, // (R,)
+    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> initial_values, // (B1, B2, ..., n0)
+    Buffer<F32> xi, // (B1, B2, ..., N - n0)
+    Buffer<F32> values, // (B1, B2, ..., N)
+    Buffer<F32> values_tangent, // (B1, B2, ..., N)
+    ResultBuffer<F32> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
+    ResultBuffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
+    ResultBuffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
+    ResultBuffer<F32> xi_tangent // (B1, B2, ..., N - n0)
+) {
+    int n_points = points.dimensions()[0];
+    int n_dim = points.dimensions()[1];
+    int n_levels = offsets.dimensions()[0];
+    int n_cov = cov_bins.dimensions()[0];
+    int n0 = n_points - neighbors.dimensions()[0];
+    int k = neighbors.dimensions()[1];
+
+    // handle both unbatched and arbitrarily batched cases
+    size_t n_batches = 1;
+    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= cov_vals.dimensions()[i];
+    }
+
+    decltype(&refine_nonlinear_vjp<1,1>) dispatch = nullptr;
+    DISPATCH(dispatch, refine_nonlinear_vjp);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(), 
+        offsets.typed_data(),
+        cov_bins.typed_data(),
+        cov_vals.typed_data(),
+        initial_values.typed_data(),
+        xi.typed_data(),
+        values.typed_data(),
+        values_tangent.typed_data(),
+        values_tangent_buffer->typed_data(),
+        cov_vals_tangent->typed_data(),
+        initial_values_tangent->typed_data(),
+        xi_tangent->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_cov,
+        n_batches
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_nonlinear_vjp_ffi, refine_nonlinear_vjp_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // cov_bins
+        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // initial_values
+        .Arg<Buffer<F32>>() // xi
+        .Arg<Buffer<F32>>() // values
+        .Arg<Buffer<F32>>() // values_tangent
+        .Ret<Buffer<F32>>() // values_tangent_buffer
+        .Ret<Buffer<F32>>() // cov_vals_tangent
+        .Ret<Buffer<F32>>() // initial_values_tangent
+        .Ret<Buffer<F32>>() // xi_tangent
+);
 
 // Error refine_nonlinear_jvp_ffi_impl(
 //     cudaStream_t stream,

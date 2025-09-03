@@ -28,11 +28,11 @@ __global__ void refine_kernel(
     if (tid >= n_threads) return;
     int n_points_per_batch = n_threads / n_batches;
     int b = tid / n_points_per_batch; // batch index
-    int idx = start_idx + (tid % n_points_per_batch); // point index within batch
+    size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
 
     // batched memory access
     const float *b_cov_vals = cov_vals + b * n_cov;
-    const float *b_xi = xi + b * n_points;
+    const float *b_xi = xi + b * (n_points - n0);
     float *b_values = values + b * n_points;
 
     // define working variables, these should fit on register
@@ -42,7 +42,7 @@ __global__ void refine_kernel(
 
     // load neighbor points and values
     for (int i = 0; i < k; ++i) {
-        int neighbor_idx = neighbors[(idx - n0) * k + i];
+        size_t neighbor_idx = neighbors[(idx - n0) * k + i];
         vec[i] = b_values[neighbor_idx]; // coarse points use values
         for (int j = 0; j < N_DIM; ++j) {
             pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
@@ -58,8 +58,8 @@ __global__ void refine_kernel(
     // refinement operation
     cov_lookup_matrix<N_DIM>(pts, cov_bins, b_cov_vals, mat, k + 1, n_cov); // joint covariance
     cholesky(mat, k + 1); // factorize
-    solve_cholesky_forward(mat, vec, k, 1); // x = Lcc^-1 @ v
-    b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // v = L @ x 
+    solve_cholesky_forward(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
+    b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // v = L @ xi
 }
 
 

@@ -100,13 +100,23 @@ __global__ void batch_memset(T *dest, T value, int n_batches, int n0, int n) {
     dest[b * n + i] = value;
 }
 
-// // out[indices] = a, NOT out = a[indices]
-// template <typename T>
-// __global__ void restore_order(const T* a, const uint32_t* indices, T* out, size_t n) {
-//     size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-//     if (tid >= n) return;
-//     out[indices[tid]] = a[tid];
-// }
+template <typename T>
+__global__ void fill_kernel(T* a, T value, size_t n) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    a[i] = value;
+}
+
+template <typename T>
+__global__ void arange_kernel(T* a, size_t n) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) a[i] = (T)i;
+}
+
+__host__ __device__ int floored_log2(int x) {
+    if (x <= 0) return 0;  // define behavior for nonpositive
+    return 31 - __builtin_clz(static_cast<uint32_t>(x));
+}
 
 __host__ __device__ uint32_t floored_log2(uint32_t x) {
     return (x > 0) ? 31 - __builtin_clz(x) : 0;  // returns 0 for x = 0
