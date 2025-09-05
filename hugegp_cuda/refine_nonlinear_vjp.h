@@ -87,19 +87,6 @@ __global__ void refine_nonlinear_vjp_kernel(
     }
     cholesky_vjp(mat, mat_tangent, k + 1);
     cov_lookup_matrix_vjp<N_DIM>(pts, mat_tangent, cov_bins, b_cov_vals_tangent, k + 1, n_cov);
-
-    // float temp_mat_tangent[MAX_K * MAX_K];
-    // for (int i = 0; i < k; ++i) {
-    //     for (int j = 0; j < k; ++j) {
-    //         temp_mat_tangent[i * k + j] = -fine_value_tangent * mat[tri(k,i)] * vec[j];
-    //     }
-    // }
-    // solve_cholesky_backward(mat, temp_mat_tangent, k, k);
-    // for (int i = 0; i < k; ++i) {
-    //     for (int j = 0; j <= i; ++j) {
-    //         mat_tangent[tri(i, j)] = temp_mat_tangent[i * k + j];
-    //     }
-    // }
 }
 
 template <int MAX_K, int N_DIM>

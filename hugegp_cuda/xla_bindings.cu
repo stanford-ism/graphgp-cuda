@@ -10,8 +10,8 @@
 #include "refine_nonlinear_jvp.h"
 #include "refine_nonlinear_vjp.h"
 #include "query.h"
-#include "query_alt.h"
 #include "depth.h"
+#include "sort.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -341,141 +341,46 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // xi_tangent
 );
 
-// Error refine_nonlinear_jvp_ffi_impl(
-//     cudaStream_t stream,
-//     Buffer<F32> points, // (N, d) in topological order
-//     Buffer<S32> neighbors, // (N, k) in original order, initial points not used
-//     Buffer<S32> offsets, // (L,) first entry is number of initial points
-//     Buffer<F32> cov_bins, // (R,)
-//     Buffer<F32> cov_vals, // (B1, B2, ..., R)
-//     Buffer<F32> initial_cholesky, // (B1, B2, ..., N0, N0)
-//     Buffer<F32> xi, // (B1, B2, ..., N)
-//     Buffer<F32> cov_vals_tangent,
-//     Buffer<F32> initial_cholesky_tangent,
-//     Buffer<F32> xi_tangent,
-//     ResultBuffer<F32> values, // (B1, B2, ..., N)
-//     ResultBuffer<F32> values_tangent
-// ) {
-//     size_t n_points = points.dimensions()[0];
-//     size_t n_dim = points.dimensions()[1];
-//     size_t n_levels = offsets.dimensions()[0];
-//     size_t n_cov = cov_bins.dimensions()[0];
-//     size_t k = neighbors.dimensions()[1];
+Error query_neighbors_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> split_dims, // (N,) split dimensions
+    Buffer<S32> query_indices, // (Q,)
+    Buffer<S32> max_indices, // (Q,)
+    ResultBuffer<S32> neighbors // (Q, k)
+) {
+    int n_points = points.dimensions()[0];
+    int n_queries = query_indices.dimensions()[0];
+    int n_dim = points.dimensions()[1];
+    int k = neighbors->dimensions()[1];
 
-//     // handle both unbatched and arbitrarily batched cases
-//     size_t n_batches = 1;
-//     size_t n_batch_dims = cov_vals.dimensions().size() - 1;
-//     for (size_t i = 0; i < n_batch_dims; ++i) {
-//         n_batches *= cov_vals.dimensions()[i];
-//     }
+    decltype(&query_neighbors<1,1>) dispatch = nullptr;
+    DISPATCH(dispatch, query_neighbors);
+    dispatch(
+        stream,
+        points.typed_data(),
+        split_dims.typed_data(),
+        query_indices.typed_data(),
+        max_indices.typed_data(),
+        neighbors->typed_data(),
+        k,
+        n_points,
+        n_queries
+    );
 
-//     decltype(&refine<1,1>) dispatch = nullptr;
-//     DISPATCH(dispatch, refine);
-//     dispatch(
-//         stream,
-//         points.typed_data(),
-//         neighbors.typed_data(), 
-//         offsets.typed_data(),
-//         cov_bins.typed_data(),
-//         cov_vals.typed_data(),
-//         initial_cholesky.typed_data(),
-//         xi.typed_data(),
-//         values->typed_data(),
-//         k,
-//         n_points,
-//         n_levels,
-//         n_cov,
-//         n_batches
-//     );
+    return Error::Success();
+}
 
-//     return Error::Success();
-// }
-
-// XLA_FFI_DEFINE_HANDLER_SYMBOL(
-//     refine_nonlinear_jvp_ffi, refine_nonlinear_jvp_ffi_impl,
-//     Ffi::Bind()
-//         .Ctx<PlatformStream<cudaStream_t>>()
-//         .Arg<Buffer<F32>>() // points
-//         .Arg<Buffer<S32>>() // neighbors
-//         .Arg<Buffer<S32>>() // offsets
-//         .Arg<Buffer<F32>>() // cov_bins
-//         .Arg<Buffer<F32>>() // cov_vals
-//         .Arg<Buffer<F32>>() // initial_cholesky
-//         .Arg<Buffer<F32>>() // xi
-//         .Arg<Buffer<F32>>() // cov_vals_tangent
-//         .Arg<Buffer<F32>>() // initial_cholesky_tangent
-//         .Arg<Buffer<F32>>() // xi_tangent
-//         .Ret<Buffer<F32>>() // values
-//         .Ret<Buffer<F32>>() // values_tangent
-// );
-
-
-// Error query_preceding_neighbors_ffi_impl(
-//     cudaStream_t stream,
-//     Buffer<F32> points, // (N, d)
-//     Buffer<S8> split_dims, // (N,) split dimensions
-//     ResultBuffer<S32> neighbors // (N, k)
-// ) {
-//     size_t n_points = points.dimensions()[0];
-//     size_t n_dim = points.dimensions()[1];
-//     size_t k = neighbors->dimensions()[1];
-
-//     decltype(&query_preceding_neighbors<1,1>) dispatch = nullptr;
-//     DISPATCH(dispatch, query_preceding_neighbors);
-//     dispatch(
-//         stream,
-//         points.typed_data(),
-//         split_dims.typed_data(),
-//         neighbors->typed_data(),
-//         n_points,
-//         k
-//     );
-
-//     return Error::Success();
-// }
-
-// XLA_FFI_DEFINE_HANDLER_SYMBOL(
-//     query_preceding_neighbors_ffi, query_preceding_neighbors_ffi_impl,
-//     Ffi::Bind()
-//         .Ctx<PlatformStream<cudaStream_t>>()
-//         .Arg<Buffer<F32>>() // points
-//         .Arg<Buffer<S8>>() // split_dims
-//         .Ret<Buffer<S32>>() // neighbors
-// );
-
-
-// Error query_preceding_neighbors_alt_ffi_impl(
-//     cudaStream_t stream,
-//     Buffer<F32> points, // (N, d)
-//     Buffer<S8> split_dims, // (N,) split dimensions
-//     ResultBuffer<S32> neighbors // (N, k)
-// ) {
-//     size_t n_points = points.dimensions()[0];
-//     size_t n_dim = points.dimensions()[1];
-//     size_t k = neighbors->dimensions()[1];
-
-//     decltype(&query_preceding_neighbors_alt<1,1>) dispatch = nullptr;
-//     DISPATCH(dispatch, query_preceding_neighbors_alt);
-//     dispatch(
-//         stream,
-//         points.typed_data(),
-//         split_dims.typed_data(),
-//         neighbors->typed_data(),
-//         n_points,
-//         k
-//     );
-
-//     return Error::Success();
-// }
-
-// XLA_FFI_DEFINE_HANDLER_SYMBOL(
-//     query_preceding_neighbors_alt_ffi, query_preceding_neighbors_alt_ffi_impl,
-//     Ffi::Bind()
-//         .Ctx<PlatformStream<cudaStream_t>>()
-//         .Arg<Buffer<F32>>() // points
-//         .Arg<Buffer<S8>>() // split_dims
-//         .Ret<Buffer<S32>>() // neighbors
-// );
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    query_neighbors_ffi, query_neighbors_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // split_dims
+        .Arg<Buffer<S32>>() // query_indices
+        .Arg<Buffer<S32>>() // max_indices
+        .Ret<Buffer<S32>>() // neighbors
+);
 
 Error compute_depths_ffi_impl(
     cudaStream_t stream,
@@ -502,4 +407,23 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S32>>() // neighbors
         .Ret<Buffer<S32>>() // depths
         .Attr<int>("n0") // n0
+);
+
+Error sort_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> keys,
+    ResultBuffer<F32> keys_out
+) {
+    int n = keys.dimensions()[0];
+    cudaMemcpyAsync(keys_out->typed_data(), keys.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    bitonic_sort(stream, keys_out->typed_data(), n);
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    sort_ffi, sort_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // keys
+        .Ret<Buffer<F32>>() // keys_out
 );

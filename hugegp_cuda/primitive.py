@@ -48,8 +48,18 @@ def initialize():
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
+        "hugegp_cuda_query_neighbors_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.query_neighbors_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
         "hugegp_cuda_compute_depths_ffi",
         jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_sort_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.sort_ffi),
         platform="gpu",
     )
 
@@ -276,6 +286,7 @@ def refine_nonlinear_vjp(
         values_tangent,
     )
 
+
 def refine_nonlinear_vjp_impl(*args):
     return jax.ffi.ffi_call(
         "hugegp_cuda_refine_nonlinear_vjp_ffi",
@@ -299,8 +310,6 @@ def refine_nonlinear_vjp_abstract_eval(*args):
 
 def refine_nonlinear_vjp_lowering(ctx, *args):
     return jax.ffi.ffi_lowering("hugegp_cuda_refine_nonlinear_vjp_ffi")(ctx, *args)
-
-
 
 
 # ========== refine_linear_transpose primitive ==========
@@ -403,3 +412,19 @@ def compute_depths(neighbors, *, n0):
     )
     depths = call(neighbors, n0=np.int32(n0))
     return depths
+
+
+def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_query_neighbors_ffi",
+        jax.ShapeDtypeStruct((query_indices.shape[0], k), jnp.int32),
+    )
+    neighbors = call(points, split_dims, query_indices, max_indices)
+    return neighbors
+
+
+def sort(keys):
+    return jax.ffi.ffi_call(
+        "hugegp_cuda_sort_ffi",
+        jax.ShapeDtypeStruct(keys.shape, jnp.float32),
+    )(keys)

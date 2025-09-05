@@ -6,14 +6,15 @@
 #include "common.h"
 
 __forceinline__ __device__ void insert_neighbor(
-    uint32_t* neighbors,
+    int* neighbors,
     float* distances,
-    uint32_t current_index,
+    int current_index,
     float current_distance,
     int k
 ) {
     int i = k - 1;
-    while ((i > 0) && (current_distance < distances[i-1])) {
+    // ensure well-defined ordering by putting earlier indices first
+    while ((i > 0) && ((current_distance < distances[i-1]) || (current_distance == distances[i-1] && current_index < neighbors[i-1]))) {
         neighbors[i] = neighbors[i-1];
         distances[i] = distances[i-1];
         --i;
@@ -22,16 +23,42 @@ __forceinline__ __device__ void insert_neighbor(
     distances[i] = current_distance;
 }
 
+__forceinline__ __device__ int compute_left(int current) {
+    int level = floored_log2(current + 1);
+    int n_level = 1 << level;
+    return current + n_level;
+}
+
+__forceinline__ __device__ int compute_right(int current) {
+    int level = floored_log2(current + 1);
+    int n_level = 1 << level;
+    return current + 2 * n_level;
+}
+
+__forceinline__ __device__ int compute_parent(int current) {
+    int level = floored_log2(current + 1);
+    int n_above = (1 << level) - 1;
+    int n_parent_level = 1 << (level - 1);
+    int parent = (current < n_above + n_parent_level) ? (current - n_parent_level) : (current - 2 * n_parent_level);
+    return (current == 0) ? -1 : parent;  // root has no parent
+}
+
+
 template <int MAX_K, int N_DIM>
-__forceinline__ __device__ void query_preceding_neighbors_impl(
-    const float* points, // (N, d) in k-d tree order
-    const int8_t* split_dims, // (N,) in k-d tree order
-    uint32_t* neighbors_out, // (N, k) output buffer
-    size_t query_index, // index of the query point in the tree
-    int k // number of neighbors to find
+__global__ void query_neighbors_kernel(
+    const float* points, // (N, d)
+    const int* split_dims, // (N,)
+    const int* query_indices, // (Q,)
+    const int* max_indices, // (Q,)
+    int* neighbors_out, // (Q, k)
+    int k,
+    int n_points,
+    int n_queries
 ) {
-    // search all points before query
-    size_t n_points = query_index;
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_queries) return;
+    int query_index = query_indices[tid];
+    int max_index = max_indices[tid];
 
     // load query point
     float query[N_DIM];
@@ -40,7 +67,7 @@ __forceinline__ __device__ void query_preceding_neighbors_impl(
     }
 
     // initialize neighbor arrays
-    uint32_t neighbors[MAX_K];
+    int neighbors[MAX_K];
     float distances[MAX_K];
     float max_distance = INFINITY;
     for (int i = 0; i < k; ++i) {
@@ -49,14 +76,14 @@ __forceinline__ __device__ void query_preceding_neighbors_impl(
     }
 
     // set up traversal variables
-    uint32_t current = 0;
-    uint32_t root_parent = (current - uint32_t(1)) / 2;
-    uint32_t previous = root_parent;
-    uint32_t next = 0;
+    int current = 0;
+    int root_parent = compute_parent(current);
+    int previous = root_parent;
+    int next = 0;
 
     // traverse until we return to root
     while (current != root_parent) {
-        uint32_t parent = (current - uint32_t(1)) / 2;
+        int parent = compute_parent(current);
 
         // update neighbor array if necessary
         if (previous == parent) {
@@ -68,16 +95,15 @@ __forceinline__ __device__ void query_preceding_neighbors_impl(
         }
 
         // locate children and determine if far child in range
-        int8_t split_dim = split_dims[current];
+        int split_dim = split_dims[current];
         float split_distance = query[split_dim] - points[current * N_DIM + split_dim];
-        uint32_t near_side = (split_distance >= 0.0f);
-        uint32_t near_child = (2 * current + 1) + near_side;
-        uint32_t far_child = (2 * current + 2) - near_side;
-        uint32_t far_in_range = (far_child < n_points) && (split_distance * split_distance <= max_distance);
+        int near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
+        int far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
+        bool far_in_range = (far_child < max_index) & (split_distance * split_distance <= max_distance);
 
         // determine next node to traverse
         if (previous == parent) {
-            if (near_child < n_points) next = near_child;
+            if (near_child < max_index) next = near_child;
             else if (far_in_range) next = far_child;
             else next = parent;
         } else if (previous == near_child) {
@@ -92,36 +118,26 @@ __forceinline__ __device__ void query_preceding_neighbors_impl(
 
     // write neighbors to output
     for (int i = 0; i < k; ++i) {
-        neighbors_out[query_index * k + i] = neighbors[i];
+        neighbors_out[tid * k + i] = neighbors[i];
     }
 }
 
 template <int MAX_K, int N_DIM>
-__global__ void query_preceding_neighbors_kernel(
-    const float* points,
-    const int8_t* split_dims,
-    uint32_t* neighbors,
-    size_t n_points,
-    int k
-) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= n_points) return;
-    query_preceding_neighbors_impl<MAX_K, N_DIM>(points, split_dims, neighbors, tid, k);
-}
-
-template <int MAX_K, int N_DIM>
-__host__ void query_preceding_neighbors(
+__host__ void query_neighbors(
     cudaStream_t stream,
     const float* points,
-    const int8_t* split_dims,
-    uint32_t* neighbors,
-    size_t n_points,
-    int k
+    const int* split_dims,
+    const int* query_indices,
+    const int* max_indices,
+    int* neighbors,
+    int k,
+    int n_points,
+    int n_queries
 ) {
-    size_t n_threads = n_points;
-    size_t threads_per_block = 256;
-    size_t n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    query_preceding_neighbors_kernel<MAX_K, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-        points, split_dims, neighbors, n_points, k
+    int n_threads = n_queries;
+    int threads_per_block = 256;
+    int n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
+    query_neighbors_kernel<MAX_K, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
+        points, split_dims, query_indices, max_indices, neighbors, k, n_points, n_queries
     );
 }
