@@ -48,8 +48,18 @@ def initialize():
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
+        "hugegp_cuda_build_tree_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.build_tree_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
         "hugegp_cuda_query_neighbors_ffi",
         jax.ffi.pycapsule(hugegp_cuda_lib.query_neighbors_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_query_preceding_neighbors_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.query_preceding_neighbors_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
@@ -402,17 +412,21 @@ def refine_linear_transpose_batch(vector_args, batch_axes):
     return refine_linear_transpose(p, n, o, cb, cv, v), (0, 0, 0)
 
 
-# ========== other ==========
+# ========== Graph construction (not differentiable) ==========
 
-
-def compute_depths(neighbors, *, n0):
+def build_tree(points):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_compute_depths_ffi",
-        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+        "hugegp_cuda_build_tree_ffi",
+        (
+            jax.ShapeDtypeStruct(points.shape, jnp.float32),
+            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct((points.shape[0],), jnp.float32),
+        )
     )
-    depths = call(neighbors, n0=np.int32(n0))
-    return depths
-
+    points, split_dims, indices, tags, ranges = call(points)
+    return points, split_dims, indices, tags, ranges
 
 def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
     call = jax.ffi.ffi_call(
@@ -422,6 +436,22 @@ def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
     neighbors = call(points, split_dims, query_indices, max_indices)
     return neighbors
 
+
+def query_preceding_neighbors(points, split_dims, *, n0, k):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_query_preceding_neighbors_ffi",
+        jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
+    )
+    neighbors = call(points, split_dims, n0=np.int32(n0))
+    return neighbors
+
+def compute_depths(neighbors, *, n0):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_compute_depths_ffi",
+        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+    )
+    depths = call(neighbors, n0=np.int32(n0))
+    return depths
 
 def sort(keys):
     return jax.ffi.ffi_call(

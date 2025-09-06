@@ -9,6 +9,7 @@
 #include "refine_linear_transpose.h"
 #include "refine_nonlinear_jvp.h"
 #include "refine_nonlinear_vjp.h"
+#include "tree.h"
 #include "query.h"
 #include "depth.h"
 #include "sort.h"
@@ -21,7 +22,16 @@ using xla::ffi::Ffi;
 using xla::ffi::F32;
 using xla::ffi::S32;
 
-#define DISPATCH(DEST, FUNC) \
+#define DISPATCH_DIM(DEST, FUNC) \
+    if      (n_dim == 1) DEST = FUNC<1>; \
+    else if (n_dim == 2) DEST = FUNC<2>; \
+    else if (n_dim == 3) DEST = FUNC<3>; \
+    else if (n_dim == 4) DEST = FUNC<4>; \
+    else if (n_dim == 5) DEST = FUNC<5>; \
+    else if (n_dim == 6) DEST = FUNC<6>; \
+    else throw std::runtime_error("only compiled for 1 <= n_dim <= 6");
+
+#define DISPATCH_K_DIM(DEST, FUNC) \
     if (n_dim == 1) { \
         if      (k <= 4)  DEST = FUNC<4,  1>; \
         else if (k <= 8)  DEST = FUNC<8,  1>; \
@@ -88,7 +98,7 @@ Error refine_ffi_impl(
     }
 
     decltype(&refine<1,1>) dispatch = nullptr;
-    DISPATCH(dispatch, refine);
+    DISPATCH_K_DIM(dispatch, refine);
     dispatch(
         stream,
         points.typed_data(),
@@ -152,7 +162,7 @@ Error refine_linear_transpose_ffi_impl(
     }
 
     decltype(&refine_linear_transpose<1,1>) dispatch = nullptr;
-    DISPATCH(dispatch, refine_linear_transpose);
+    DISPATCH_K_DIM(dispatch, refine_linear_transpose);
     dispatch(
         stream,
         points.typed_data(), 
@@ -220,7 +230,7 @@ Error refine_nonlinear_jvp_ffi_impl(
     }
 
     decltype(&refine_nonlinear_jvp<1,1>) dispatch = nullptr;
-    DISPATCH(dispatch, refine_nonlinear_jvp);
+    DISPATCH_K_DIM(dispatch, refine_nonlinear_jvp);
     dispatch(
         stream,
         points.typed_data(),
@@ -295,7 +305,7 @@ Error refine_nonlinear_vjp_ffi_impl(
     }
 
     decltype(&refine_nonlinear_vjp<1,1>) dispatch = nullptr;
-    DISPATCH(dispatch, refine_nonlinear_vjp);
+    DISPATCH_K_DIM(dispatch, refine_nonlinear_vjp);
     dispatch(
         stream,
         points.typed_data(),
@@ -341,6 +351,47 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // xi_tangent
 );
 
+Error build_tree_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points_in, // (N, d)
+    ResultBuffer<F32> points, // (N, d)
+    ResultBuffer<S32> split_dims, // (N,)
+    ResultBuffer<S32> indices, // (N,)
+    ResultBuffer<S32> tags, // (N,)
+    ResultBuffer<F32> ranges // (N,)
+) {
+    int n_points = points_in.dimensions()[0];
+    int n_dim = points_in.dimensions()[1];
+
+    cudaMemcpyAsync(points->typed_data(), points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+
+    decltype(&build_tree<1>) dispatch = nullptr;
+    DISPATCH_DIM(dispatch, build_tree);
+    dispatch(
+        stream,
+        points->typed_data(),
+        split_dims->typed_data(),
+        indices->typed_data(),
+        tags->typed_data(),
+        ranges->typed_data(),
+        n_points
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    build_tree_ffi, build_tree_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points_in
+        .Ret<Buffer<F32>>() // points
+        .Ret<Buffer<S32>>() // split_dims
+        .Ret<Buffer<S32>>() // indices
+        .Ret<Buffer<S32>>() // tags
+        .Ret<Buffer<F32>>() // ranges
+);
+
 Error query_neighbors_ffi_impl(
     cudaStream_t stream,
     Buffer<F32> points, // (N, d)
@@ -355,7 +406,7 @@ Error query_neighbors_ffi_impl(
     int k = neighbors->dimensions()[1];
 
     decltype(&query_neighbors<1,1>) dispatch = nullptr;
-    DISPATCH(dispatch, query_neighbors);
+    DISPATCH_K_DIM(dispatch, query_neighbors);
     dispatch(
         stream,
         points.typed_data(),
@@ -380,6 +431,42 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S32>>() // query_indices
         .Arg<Buffer<S32>>() // max_indices
         .Ret<Buffer<S32>>() // neighbors
+);
+
+Error query_preceding_neighbors_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> split_dims, // (N,) split dimensions
+    ResultBuffer<S32> neighbors, // (N - n0, k)
+    int n0
+) {
+    int n_points = points.dimensions()[0];
+    int n_dim = points.dimensions()[1];
+    int k = neighbors->dimensions()[1];
+
+    decltype(&query_preceding_neighbors<1,1>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_preceding_neighbors);
+    dispatch(
+        stream,
+        points.typed_data(),
+        split_dims.typed_data(),
+        neighbors->typed_data(),
+        n0,
+        k,
+        n_points
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    query_preceding_neighbors_ffi, query_preceding_neighbors_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // split_dims
+        .Ret<Buffer<S32>>() // neighbors
+        .Attr<int>("n0") // n0
 );
 
 Error compute_depths_ffi_impl(

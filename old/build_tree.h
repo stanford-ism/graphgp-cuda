@@ -7,6 +7,39 @@
 #include "common.h"
 
 
+__forceinline__ __device__ int compute_left(int node) {
+    int level = floored_log2(node + 1);
+    int n_level = 1 << level;
+    return node + n_level;
+}
+
+__forceinline__ __device__ int compute_right(int node) {
+    int level = floored_log2(node + 1);
+    int n_level = 1 << level;
+    return node + 2 * n_level;
+}
+
+__forceinline__ __device__ int compute_parent(int node) {
+    int level = floored_log2(node + 1);
+    int n_above = (1 << level) - 1;
+    int n_parent_level = 1 << (level - 1);
+    int parent = (node < n_above + n_parent_level) ? (node - n_parent_level) : (node - 2 * n_parent_level);
+    parent = (node == 0) ? UINT32_MAX : parent;  // root has no parent
+    return parent;
+}
+
+__forceinline__ __device__ int segment_left(int tag) {
+    return tag;
+}
+
+__forceinline__ __device__ int segment_right(int tag) {
+    return tag + 1;
+}
+
+__forceinline__ __device__ int update_tag(int tag) {
+    return tag + 2;
+}
+
 template <int N_DIM>
 __host__ void build_tree(
     cudaStream_t stream,
@@ -89,35 +122,3 @@ __host__ void build_tree(
 
 }
 
-__forceinline__ __device__ int compute_left(int node) {
-    int level = floored_log2(node + 1);
-    int n_level = 1 << level;
-    return node + n_level;
-}
-
-__forceinline__ __device__ int compute_right(int node) {
-    int level = floored_log2(node + 1);
-    int n_level = 1 << level;
-    return node + 2 * n_level;
-}
-
-__forceinline__ __device__ int compute_parent(int node) {
-    int level = floored_log2(node + 1);
-    int n_above = (1 << level) - 1;
-    int n_parent_level = 1 << (level - 1);
-    int parent = (node < n_above + n_parent_level) ? (node - n_parent_level) : (node - 2 * n_parent_level);
-    parent = (node == 0) ? UINT32_MAX : parent;  // root has no parent
-    return parent;
-}
-
-__forceinline__ __device__ int segment_left(int tag) {
-    return tag;
-}
-
-__forceinline__ __device__ int segment_right(int tag) {
-    return tag + 1;
-}
-
-__forceinline__ __device__ int update_tag(int tag) {
-    return tag + 2;
-}

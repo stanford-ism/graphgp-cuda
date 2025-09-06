@@ -141,9 +141,7 @@ __host__ void refine_nonlinear_vjp(
     // copy initial values_tangent to output
     n_threads = n_batches * n0;
     n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    batch_extract<<<n_blocks, threads_per_block, 0, stream>>>(
-        initial_values_tangent, values_tangent_buffer, n_batches, n0, n_points
-    );
+    batch_copy<<<n_blocks, threads_per_block, 0, stream>>>(initial_values_tangent, values_tangent_buffer, n_batches, n0, n_points, n0);
 
     free(offsets_host);
 }

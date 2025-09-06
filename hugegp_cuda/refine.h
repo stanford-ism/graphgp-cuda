@@ -95,7 +95,7 @@ __host__ void refine(
     // copy initial values to output values
     n_threads = n_batches * n0;
     n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    batch_copy<<<n_blocks, threads_per_block, 0, stream>>>(values, initial_values, n_batches, n0, n_points);
+    batch_copy<<<n_blocks, threads_per_block, 0, stream>>>(values, initial_values, n_batches, n_points, n0, n0);
 
     // iteratively refine levels
     for (int level = 1; level < n_levels; ++level) {
