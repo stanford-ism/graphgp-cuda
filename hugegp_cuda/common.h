@@ -4,6 +4,12 @@
 #include <cmath>
 #include <cuda_runtime.h>
 
+#define CUDA_LAUNCH(kernel, n_threads, stream, ...) do {                         \
+    int threads_per_block = 256;                                                 \
+    int n_blocks  = (n_threads + threads_per_block - 1) / threads_per_block;     \
+    kernel<<<n_blocks, threads_per_block, 0, stream>>>(__VA_ARGS__, n_threads);  \
+} while(0)
+
 __forceinline__ __device__ int tri(int i, int j) {
     return (i * (i + 1)) / 2 + j;
 }
@@ -22,26 +28,26 @@ __forceinline__ __device__ int searchsorted(const float* a, float v, int n) {
     return left;
 }
 
-template <int N_DIM>
 __forceinline__ __device__ float compute_distance(
     const float* point_a, // (d,)
-    const float* point_b // (d,)
+    const float* point_b, // (d,)
+    int n_dim
 ) {
     float dist = 0.0f;
-    for (int i = 0; i < N_DIM; ++i) {
+    for (int i = 0; i < n_dim; ++i) {
         float diff = point_a[i] - point_b[i];
         dist += diff * diff;
     }
     return sqrtf(dist);
 }
 
-template <int N_DIM>
 __forceinline__ __device__ float compute_square_distance(
     const float* point_a, // (d,)
-    const float* point_b // (d,)
+    const float* point_b, // (d,)
+    int n_dim
 ) {
     float dist = 0.0f;
-    for (int i = 0; i < N_DIM; ++i) {
+    for (int i = 0; i < n_dim; ++i) {
         float diff = point_a[i] - point_b[i];
         dist += diff * diff;
     }
@@ -49,32 +55,23 @@ __forceinline__ __device__ float compute_square_distance(
 }
 
 
+__global__ void compute_inverse_permutation(const int* permutation, int* inv_permutation, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n) return;
+    inv_permutation[permutation[tid]] = tid;
+}
+
 // copy N elements from (B, N1) to (B, N2), where N <= min(N1, N2)
 template <typename T>
-__global__ void batch_copy(T *dest, const T *src,  int n_batches, int n_dest, int n_src, int n_copy) {
+__global__ void batch_copy(T *dest, const T *src, int n_batches, int n_dest, int n_src, int n_threads) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    int n_copy = n_threads / n_batches;
     int b = tid / n_copy; // batch index
     int i = tid % n_copy; // index within batch
     if (b >= n_batches) return;
     dest[b * n_dest + i] = src[b * n_src + i];
 }
-
-// // set first N0 of (B, N) to value
-// template <typename T>
-// __global__ void batch_memset(T *dest, T value, int n_batches, int n0, int n) {
-//     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-//     int b = tid / n0; // batch index
-//     int i = tid % n0; // index within batch
-//     if (b >= n_batches) return;
-//     dest[b * n + i] = value;
-// }
-
-// template <typename T>
-// __global__ void fill_kernel(T* a, T value, size_t n) {
-//     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-//     if (i >= n) return;
-//     a[i] = value;
-// }
 
 template <typename T>
 __global__ void arange_kernel(T* a, size_t n) {

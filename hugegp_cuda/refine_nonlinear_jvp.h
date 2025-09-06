@@ -67,8 +67,8 @@ __global__ void refine_nonlinear_jvp_kernel(
 
     
     // load and factorize joint covariance, with jvp
-    cov_lookup_matrix<N_DIM>(pts, cov_bins, b_cov_vals, mat, k + 1, n_cov); // K
-    cov_lookup_matrix<N_DIM>(pts, cov_bins, b_cov_vals_tangent, mat_tangent, k + 1, n_cov); // dK
+    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // K
+    cov_lookup_matrix(pts, cov_bins, b_cov_vals_tangent, mat_tangent, k + 1, N_DIM, n_cov); // dK
     cholesky(mat, k + 1); // L
     cholesky_jvp(mat, mat_tangent, k + 1); // dL
 
@@ -111,10 +111,6 @@ __host__ void refine_nonlinear_jvp(
     int n_cov,
     int n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
 ) {
-    int n_threads;
-    int threads_per_block = 256;
-    int n_blocks;
-
     // copy offsets to host
     int *offsets_host;
     offsets_host = (int*)malloc(n_levels * sizeof(int));
@@ -122,20 +118,33 @@ __host__ void refine_nonlinear_jvp(
     cudaMemcpy(offsets_host, offsets, n_levels * sizeof(int), cudaMemcpyDeviceToHost);
 
     // copy initial values to output values
-    n_threads = n_batches * n0;
-    n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    batch_copy<<<n_blocks, threads_per_block, 0, stream>>>(values, initial_values, n_batches, n_points, n0, n0);
-    batch_copy<<<n_blocks, threads_per_block, 0, stream>>>(values_tangent, initial_values_tangent, n_batches, n_points, n0, n0);
+    CUDA_LAUNCH(batch_copy, n_batches * n0, stream, values, initial_values, n_batches, n_points, n0);
+    CUDA_LAUNCH(batch_copy, n_batches * n0, stream, values_tangent, initial_values_tangent, n_batches, n_points, n0);
 
     // iteratively refine levels
     for (int level = 1; level < n_levels; ++level) {
         int start_idx = offsets_host[level - 1];
         int end_idx = offsets_host[level];
-        n_threads = (end_idx - start_idx) * n_batches;
-        n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-        refine_nonlinear_jvp_kernel<MAX_K, N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-            points, neighbors, cov_bins, cov_vals, xi, cov_vals_tangent, xi_tangent, values, values_tangent, n0, k, n_points, n_cov, n_batches, start_idx, n_threads
-        );
+        int n_threads = (end_idx - start_idx) * n_batches;
+        CUDA_LAUNCH(
+            (refine_nonlinear_jvp_kernel<MAX_K, N_DIM>),
+            n_threads,
+            stream,
+            points,
+            neighbors,
+            cov_bins,
+            cov_vals,
+            xi,
+            cov_vals_tangent,
+            xi_tangent,
+            values,
+            values_tangent,
+            n0,
+            k,
+            n_points,
+            n_cov,
+            n_batches,
+            start_idx);
     }
 
     free(offsets_host);

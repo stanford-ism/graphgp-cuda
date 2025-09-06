@@ -5,14 +5,15 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+#include "common.h"
+#include "sort.h"
+#include "tree.h"
+#include "query.h"
+#include "depth.h"
 #include "refine.h"
 #include "refine_linear_transpose.h"
 #include "refine_nonlinear_jvp.h"
 #include "refine_nonlinear_vjp.h"
-#include "tree.h"
-#include "query.h"
-#include "depth.h"
-#include "sort.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -21,15 +22,6 @@ using xla::ffi::PlatformStream;
 using xla::ffi::Ffi;
 using xla::ffi::F32;
 using xla::ffi::S32;
-
-#define DISPATCH_DIM(DEST, FUNC) \
-    if      (n_dim == 1) DEST = FUNC<1>; \
-    else if (n_dim == 2) DEST = FUNC<2>; \
-    else if (n_dim == 3) DEST = FUNC<3>; \
-    else if (n_dim == 4) DEST = FUNC<4>; \
-    else if (n_dim == 5) DEST = FUNC<5>; \
-    else if (n_dim == 6) DEST = FUNC<6>; \
-    else throw std::runtime_error("only compiled for 1 <= n_dim <= 6");
 
 #define DISPATCH_K_DIM(DEST, FUNC) \
     if (n_dim == 1) { \
@@ -71,6 +63,8 @@ using xla::ffi::S32;
     } else { \
         throw std::runtime_error("only compiled for 1 <= n_dim <= 6"); \
     }
+
+// ==================== REFINE OPERATIONS ====================
 
 Error refine_ffi_impl(
     cudaStream_t stream,
@@ -209,9 +203,9 @@ Error refine_nonlinear_jvp_ffi_impl(
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
-    Buffer<F32> cov_vals_tangent,
-    Buffer<F32> initial_values_tangent,
-    Buffer<F32> xi_tangent,
+    Buffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
+    Buffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
+    Buffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> values_tangent
 ) {
@@ -351,6 +345,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // xi_tangent
 );
 
+// ==================== GRAPH CONSTRUCTION ====================
+
 Error build_tree_ffi_impl(
     cudaStream_t stream,
     Buffer<F32> points_in, // (N, d)
@@ -362,21 +358,17 @@ Error build_tree_ffi_impl(
 ) {
     int n_points = points_in.dimensions()[0];
     int n_dim = points_in.dimensions()[1];
-
     cudaMemcpyAsync(points->typed_data(), points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-
-    decltype(&build_tree<1>) dispatch = nullptr;
-    DISPATCH_DIM(dispatch, build_tree);
-    dispatch(
+    build_tree(
         stream,
         points->typed_data(),
         split_dims->typed_data(),
         indices->typed_data(),
         tags->typed_data(),
         ranges->typed_data(),
+        n_dim,
         n_points
     );
-
     return Error::Success();
 }
 
@@ -405,18 +397,19 @@ Error query_neighbors_ffi_impl(
     int n_dim = points.dimensions()[1];
     int k = neighbors->dimensions()[1];
 
-    decltype(&query_neighbors<1,1>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, query_neighbors);
-    dispatch(
+    decltype(&query_neighbors_kernel<1,1>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_neighbors_kernel);
+    CUDA_LAUNCH(
+        dispatch,
+        n_queries,
         stream,
-        points.typed_data(),
+        points.typed_data(), 
         split_dims.typed_data(),
         query_indices.typed_data(),
         max_indices.typed_data(),
         neighbors->typed_data(),
         k,
-        n_points,
-        n_queries
+        n_points
     );
 
     return Error::Success();
@@ -437,24 +430,16 @@ Error query_preceding_neighbors_ffi_impl(
     cudaStream_t stream,
     Buffer<F32> points, // (N, d)
     Buffer<S32> split_dims, // (N,) split dimensions
-    ResultBuffer<S32> neighbors, // (N - n0, k)
-    int n0
+    ResultBuffer<S32> neighbors // (N - n0, k)
 ) {
     int n_points = points.dimensions()[0];
     int n_dim = points.dimensions()[1];
+    int n0 = n_points - neighbors->dimensions()[0];
     int k = neighbors->dimensions()[1];
 
-    decltype(&query_preceding_neighbors<1,1>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, query_preceding_neighbors);
-    dispatch(
-        stream,
-        points.typed_data(),
-        split_dims.typed_data(),
-        neighbors->typed_data(),
-        n0,
-        k,
-        n_points
-    );
+    decltype(&query_preceding_neighbors_kernel<1,1>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_preceding_neighbors_kernel);
+    CUDA_LAUNCH(dispatch, n_points - n0, stream, points.typed_data(), split_dims.typed_data(), neighbors->typed_data(), n0, k);
 
     return Error::Success();
 }
@@ -466,24 +451,30 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // split_dims
         .Ret<Buffer<S32>>() // neighbors
-        .Attr<int>("n0") // n0
 );
 
 Error compute_depths_ffi_impl(
     cudaStream_t stream,
     Buffer<S32> neighbors, // (N - n0, k)
-    ResultBuffer<S32> depths, // (N,)
-    int n0
+    ResultBuffer<S32> depths_in, // (N,)
+    ResultBuffer<S32> temp_in, // (N,)
+    int n_steps
 ) {
-    int n_points = neighbors.dimensions()[0] + n0;
+    int n_points = depths_in->dimensions()[0];
+    int n0 = n_points - neighbors.dimensions()[0];
     int k = neighbors.dimensions()[1];
-    compute_depths<<<1, 1, 0, stream>>>(
-        neighbors.typed_data(),
-        depths->typed_data(),
-        n_points,
-        n0,
-        k
-    );
+    // CUDA_LAUNCH(compute_depths, 1, stream, neighbors.typed_data(), depths->typed_data(), n_points, n0, k);
+
+    int* depths = depths_in->typed_data();
+    int* temp = temp_in->typed_data();
+
+    cudaMemsetAsync(depths, 0, n_points * sizeof(int), stream);
+    cudaMemsetAsync(temp, 0, n_points * sizeof(int), stream);
+    for (int i = 0; i < n_steps; ++i) {
+        CUDA_LAUNCH(update_depths, n_points - n0, stream, neighbors.typed_data(), depths, temp, n0, k);
+        cudaMemcpyAsync(depths, temp, n_points * sizeof(int), cudaMemcpyDeviceToDevice, stream);
+    }
+
     return Error::Success();
 }
 
@@ -493,24 +484,117 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<S32>>() // neighbors
         .Ret<Buffer<S32>>() // depths
-        .Attr<int>("n0") // n0
+        .Ret<Buffer<S32>>() // temp
+        .Attr<int>("n_steps")
 );
 
-Error sort_ffi_impl(
+Error order_by_depth_ffi_impl(
     cudaStream_t stream,
-    Buffer<F32> keys,
-    ResultBuffer<F32> keys_out
+    Buffer<F32> points_in, // (N, d)
+    Buffer<S32> indices_in, // (N,)
+    Buffer<S32> neighbors_in, // (N - n0, k)
+    Buffer<S32> depths_in, // (N,)
+    ResultBuffer<F32> points_out,
+    ResultBuffer<S32> indices_out,
+    ResultBuffer<S32> neighbors_out,
+    ResultBuffer<S32> depths_out,
+    ResultBuffer<S32> temp // (2*N,)
 ) {
-    int n = keys.dimensions()[0];
-    cudaMemcpyAsync(keys_out->typed_data(), keys.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    bitonic_sort(stream, keys_out->typed_data(), n);
+    int n_points = points_in.dimensions()[0];
+    int n_dim = points_in.dimensions()[1];
+    int n0 = n_points - neighbors_in.dimensions()[0];
+    int k = neighbors_in.dimensions()[1];
+
+    cudaMemcpyAsync(points_out->typed_data(), points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(indices_out->typed_data(), indices_in.typed_data(), n_points * sizeof(int), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(neighbors_out->typed_data(), neighbors_in.typed_data(), (n_points - n0) * k * sizeof(int), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(depths_out->typed_data(), depths_in.typed_data(), n_points * sizeof(int), cudaMemcpyDeviceToDevice, stream);
+
+    order_by_depth(
+        stream,
+        points_out->typed_data(),
+        indices_out->typed_data(),
+        neighbors_out->typed_data(),
+        depths_out->typed_data(),
+        temp->typed_data(),
+        temp->typed_data() + n_points,
+        n0,
+        k,
+        n_points,
+        n_dim
+    );
     return Error::Success();
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    sort_ffi, sort_ffi_impl,
+    order_by_depth_ffi, order_by_depth_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
-        .Arg<Buffer<F32>>() // keys
-        .Ret<Buffer<F32>>() // keys_out
+        .Arg<Buffer<F32>>() // points_in
+        .Arg<Buffer<S32>>() // indices_in
+        .Arg<Buffer<S32>>() // neighbors_in
+        .Arg<Buffer<S32>>() // depths_in
+        .Ret<Buffer<F32>>() // points_out
+        .Ret<Buffer<S32>>() // indices_out
+        .Ret<Buffer<S32>>() // neighbors_out
+        .Ret<Buffer<S32>>() // depths_out
+        .Ret<Buffer<S32>>() // temp
+);
+
+
+Error build_graph_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points_in,
+    ResultBuffer<F32> points_out, // (N, d)
+    ResultBuffer<S32> indices_out, // (N,)
+    ResultBuffer<S32> neighbors_out, // (N - n0, k)
+    ResultBuffer<S32> depths_out, // (N, )
+    ResultBuffer<S32> temp_out // (2*N,)
+) {
+    int n_points = points_in.dimensions()[0];
+    int n_dim = points_in.dimensions()[1];
+    int n0 = n_points - neighbors_out->dimensions()[0];
+    int k = neighbors_out->dimensions()[1];
+
+    float* points = points_out->typed_data();
+    int* indices = indices_out->typed_data();
+    int* neighbors = neighbors_out->typed_data();
+    int* depths = depths_out->typed_data();
+    int* temp = temp_out->typed_data();
+
+    // Build tree
+    cudaMemcpyAsync(points, points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    build_tree(
+        stream,
+        points,
+        depths, // use depths as split_dims
+        indices,
+        temp, // tags
+        reinterpret_cast<float*>(temp + n_points), // ranges
+        n_dim,
+        n_points
+    );
+
+    // Query preceding neighbors
+    decltype(&query_preceding_neighbors_kernel<1,1>) query_dispatch = nullptr;
+    DISPATCH_K_DIM(query_dispatch, query_preceding_neighbors_kernel);
+    CUDA_LAUNCH(query_dispatch, n_points - n0, stream, points, depths, neighbors, n0, k);
+
+    // Order by depth
+    CUDA_LAUNCH(compute_depths, 1, stream, neighbors, depths, n_points, n0, k);
+    order_by_depth(stream, points, indices, neighbors, depths, temp, temp + n_points, n0, k, n_points, n_dim);
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    build_graph_ffi, build_graph_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>()  // points_in
+        .Ret<Buffer<F32>>()  // points
+        .Ret<Buffer<S32>>()  // indices
+        .Ret<Buffer<S32>>()  // neighbors
+        .Ret<Buffer<S32>>()  // depths
+        .Ret<Buffer<S32>>()  // temp
 );

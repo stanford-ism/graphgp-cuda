@@ -5,6 +5,8 @@ from .primitive import (
     query_neighbors,
     query_preceding_neighbors,
     compute_depths,
+    order_by_depth,
+    build_graph,
 )
 
 initialize()
@@ -15,4 +17,6 @@ __all__ = [
     "query_neighbors",
     "query_preceding_neighbors",
     "compute_depths",
+    "order_by_depth",
+    "build_graph",
 ]

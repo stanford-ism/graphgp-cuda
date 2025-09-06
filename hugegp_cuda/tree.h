@@ -52,17 +52,25 @@ __forceinline__ __device__ int compute_segment_end(int tag, int n_above, int n_r
     return end + n_above;
 }
 
-template <int N_DIM>
-__global__ void update_ranges(const int* tags, const float* points, float* ranges, int* split_dims, int dim, int n_above, int n_remaining) {
+__global__ void update_ranges(
+    const int* tags,
+    const float* points,
+    float* ranges,
+    int* split_dims,
+    int dim,
+    int n_dim,
+    int n_above,
+    int n_threads
+) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_remaining) return;
+    if (idx >= n_threads) return;
     int i = n_above + idx;
 
     int tag = tags[i];
-    int start = compute_segment_start(tag, n_above, n_remaining);
-    int end = compute_segment_end(tag, n_above, n_remaining);
-    float start_val = points[start * N_DIM + dim];
-    float end_val = points[(end - 1) * N_DIM + dim];
+    int start = compute_segment_start(tag, n_above, n_threads);
+    int end = compute_segment_end(tag, n_above, n_threads);
+    float start_val = points[start * n_dim + dim];
+    float end_val = points[(end - 1) * n_dim + dim];
     float dim_range = abs(end_val - start_val);
     if (dim_range > ranges[i]) {
         ranges[i] = dim_range;
@@ -70,14 +78,14 @@ __global__ void update_ranges(const int* tags, const float* points, float* range
     }
 }
 
-__global__ void update_tags(int* tags, int* split_dims, float* ranges, int n_above, int n_remaining) {
+__global__ void update_tags(int* tags, int* split_dims, float* ranges, int n_above, int n_threads) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_remaining) return;
+    if (idx >= n_threads) return;
     int i = n_above + idx;
 
     int tag = tags[i];
-    int start = compute_segment_start(tag, n_above, n_remaining);
-    int end = compute_segment_end(tag, n_above, n_remaining);
+    int start = compute_segment_start(tag, n_above, n_threads);
+    int end = compute_segment_end(tag, n_above, n_threads);
     int midpoint = (start + end) / 2;
     if (i == midpoint) return;
     if (i < midpoint) tags[i] = compute_left(tag);
@@ -86,7 +94,6 @@ __global__ void update_tags(int* tags, int* split_dims, float* ranges, int n_abo
     ranges[i] = 0.0f;
 }
 
-template <int N_DIM>
 __host__ void build_tree(
     cudaStream_t stream,
     float* points, // (N, d)
@@ -94,40 +101,30 @@ __host__ void build_tree(
     int* indices, // (N,)
     int* tags, // (N,)
     float* ranges, // (N,)
+    int n_dim,
     int n_points
 ) {
     int n_levels = floored_log2(n_points) + 1;
-    int n_threads;
-    int threads_per_block = 256;
-    int n_blocks;
 
     // initialize tags, split_dims, ranges to zero and indices to arange
     cudaMemsetAsync(tags, 0, n_points * sizeof(int), stream);
     cudaMemsetAsync(split_dims, 0, n_points * sizeof(int), stream);
     cudaMemsetAsync(ranges, 0, n_points * sizeof(float), stream);
-    n_threads = n_points;
-    n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
-    arange_kernel<<<n_blocks, threads_per_block, 0, stream>>>(indices, n_points);
+    CUDA_LAUNCH(arange_kernel<int>, n_points, stream, indices);
 
     for (int level = 0; level < n_levels; ++level) {
         int n_above = (1 << level) - 1;
         int n_remaining = n_points - n_above;
-        n_threads = n_remaining;
-        n_blocks = (n_threads + threads_per_block - 1) / threads_per_block;
 
         // sort segments along each dimension and store the dimension with largest range in split_dims
-        for (int dim = 0; dim < N_DIM; ++ dim) {
-            sort_points<N_DIM>(stream, tags, points, split_dims, indices, ranges, dim, n_points);
-            update_ranges<N_DIM><<<n_blocks, threads_per_block, 0, stream>>>(
-                tags, points, ranges, split_dims, dim, n_above, n_remaining
-            );
+        for (int dim = 0; dim < n_dim; ++ dim) {
+            sort_points(stream, tags, points, split_dims, indices, ranges, dim, n_dim, n_points);
+            CUDA_LAUNCH(update_ranges, n_remaining, stream, tags, points, ranges, split_dims, dim, n_dim, n_above);
         }
 
         // sort along split dimension and update tags for next level
-        sort_points<N_DIM>(stream, tags, points, split_dims, indices, ranges, int(-1), n_points);
-        update_tags<<<n_blocks, threads_per_block, 0, stream>>>(
-            tags, split_dims, ranges, n_above, n_remaining
-        );
+        sort_points(stream, tags, points, split_dims, indices, ranges, int(-1), n_dim, n_points);
+        CUDA_LAUNCH(update_tags, n_remaining, stream, tags, split_dims, ranges, n_above);
     }
 }
 
