@@ -6,8 +6,8 @@
 #include "sort.h"
 // #include "cubit.h"
 
-// This implementation is optimized for minimal memory overhead and simplicity of implementation.
-// Therefore, we do not use CUB sorts or segmented reductions. Instead, we express that algorithm
+// This implementation is optimized for minimal memory overhead and ease of maintenance.
+// Therefore, we do not use CUB sorts or segmented reductions. Instead, we express the algorithm
 // as a sequence of in-place sorts using cubit. Unlike cudaKDTree, we split along the dimension with
 // the largest range. This requires a sort for each dimension. More than an order of magnitude
 // performance improvement is likely possible, but for typical applications the graph is constructed once

@@ -63,8 +63,13 @@ def initialize():
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_compute_depths_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_ffi),
+        "hugegp_cuda_compute_depths_parallel_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_parallel_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_compute_depths_serial_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_serial_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
@@ -75,6 +80,11 @@ def initialize():
     jax.ffi.register_ffi_target(
         "hugegp_cuda_build_graph_ffi",
         jax.ffi.pycapsule(hugegp_cuda_lib.build_graph_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "hugegp_cuda_sort_ffi",
+        jax.ffi.pycapsule(hugegp_cuda_lib.sort_ffi),
         platform="gpu",
     )
 
@@ -453,15 +463,24 @@ def query_preceding_neighbors(points, split_dims, *, n0, k):
     return neighbors
 
 
-def compute_depths(neighbors, *, n0, n_steps):
+def compute_depths_parallel(neighbors, *, n0):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_compute_depths_ffi",
+        "hugegp_cuda_compute_depths_parallel_ffi",
         (
             jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
             jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
         ),
     )
-    depths, temp = call(neighbors, n_steps=np.int32(n_steps))
+    depths, temp = call(neighbors)
+    return depths
+
+
+def compute_depths_serial(neighbors, *, n0):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_compute_depths_serial_ffi",
+        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32)
+    )
+    depths = call(neighbors)
     return depths
 
 
@@ -493,3 +512,11 @@ def build_graph(points, *, n0, k):
     )
     points, indices, neighbors, depths, temp = call(points)
     return points, indices, neighbors, depths
+
+def sort(keys):
+    call = jax.ffi.ffi_call(
+        "hugegp_cuda_sort_ffi",
+        jax.ShapeDtypeStruct(keys.shape, jnp.float32),
+    )
+    keys_sorted = call(keys)
+    return keys_sorted

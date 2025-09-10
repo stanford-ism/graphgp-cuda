@@ -3,10 +3,12 @@
 
 #include <cuda_runtime.h>
 #include "common.h"
+#include "cubit/cubit.h"
 
 // EXTREMELY SIMPLISTIC SORT
 // Uses logic from https://github.com/ingowald/cudaBitonic/blob/master/cubit/cubit.h
 // Should certainly replace with this eventually, just want something simple I can easily modify
+
 
 // ======================= SORT FOR BUILDING TREE ================================
 
@@ -181,42 +183,128 @@ __host__ void sort_by_depth(
 
 // ================= REFERENCE NON-POWER-OF-TWO BITONIC SORT ===================
 
-template <typename T>
-__forceinline__ __device__ void compare_swap(T* keys, int i, int j) {
-    T k1 = keys[i];
-    T k2 = keys[j];
+__forceinline__ __device__ void shared_swap(float* keys, int i, int j) {
+    float k1 = keys[i];
+    float k2 = keys[j];
+    bool swap = (k1 > k2);
+    keys[i] = swap ? k2 : k1;
+    keys[j] = swap ? k1 : k2;
+}
+
+__forceinline__ __device__ void global_swap(float* keys, int i, int j) {
+    float k1 = keys[i];
+    float k2 = keys[j];
     if (k1 > k2) {
         keys[i] = k2;
         keys[j] = k1;
     }
 }
 
-template <typename T>
-__global__ void sort_up(T* keys, int stride, int n) {
+__global__ void global_sort_up(float* keys, int u, int n) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n) return;
-    int s = tid & -stride;
+    int s = tid & -u;
     int l = tid + s;
-    int r = l ^ (2 * stride - 1);
-    if ((r < n) && (l < n)) compare_swap(keys, l, r);
+    int r = l ^ (2 * u - 1);
+    if (r < n) global_swap(keys, l, r);
 }
 
-template <typename T>
-__global__ void sort_down(T* keys, int stride, int n) {
+__global__ void global_sort_down(float* keys, int d, int n) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n) return;
-    int s = tid & -stride;
+    int s = tid & -d;
     int l = tid + s;
-    int r = l + stride;
-    if ((r < n) && (l < n)) compare_swap(keys, l, r);
+    int r = l + d;
+    if (r < n) global_swap(keys, l, r);
 }
 
-template <typename T>
-__host__ void bitonic_sort(cudaStream_t stream, T* keys, int n) {
-    for (int u = 1; u < n; u += u) {
-        CUDA_LAUNCH(sort_up<T>, n, stream, keys, u);
+// MUST call with power-of-two N_SHARED = 2 * blockDim.x
+template <int N_SHARED>
+__global__ void block_sort(float* g_keys, int n) {
+    int i = threadIdx.x;
+    int block_threads = blockDim.x;
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    
+    // build power of two array of keys
+    __shared__ float keys[N_SHARED];
+    if (tid < n) keys[i] = g_keys[tid];
+    else keys[i] = INFINITY;
+    if (tid + block_threads < n) keys[i + block_threads] = g_keys[tid + block_threads];
+    else keys[i + block_threads] = INFINITY;
+    __syncthreads();
+
+    // bitonic sorting network
+    int s, l, r;
+    #pragma unroll
+    for (int u = 1; u < N_SHARED; u += u) {
+        s = i & -u; l = i + s; r = l ^ (2 * u - 1);
+        shared_swap(keys, l, r);
+        __syncthreads();
+        #pragma unroll
         for (int d = u/2; d > 0; d /= 2) {
-            CUDA_LAUNCH(sort_down<T>, n, stream, keys, d);
+            s = i & -d; l = i + s; r = l + d;
+            shared_swap(keys, l, r);
+            __syncthreads();
         }
     }
+
+    // write back results
+    if (tid < n) g_keys[tid] = keys[i];
+    if (tid + block_threads < n) g_keys[tid + block_threads] = keys[i + block_threads];
+}
+
+
+// MUST call with power-of-two N_SHARED = 2 * blockDim.x
+template <int N_SHARED>
+__global__ void block_sort_down(float* g_keys, int n) {
+    int i = threadIdx.x;
+    int block_threads = blockDim.x;
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    
+    // build power of two array of keys
+    __shared__ float keys[N_SHARED];
+    if (tid < n) keys[i] = g_keys[tid];
+    else keys[i] = INFINITY;
+    if (tid + block_threads < n) keys[i + block_threads] = g_keys[tid + block_threads];
+    else keys[i + block_threads] = INFINITY;
+    __syncthreads();
+
+    // bitonic sorting network
+    int s, l, r;
+    #pragma unroll
+    for (int d = N_SHARED/2; d > 0; d /= 2) {
+        s = i & -d; l = i + s; r = l + d;
+        shared_swap(keys, l, r);
+        __syncthreads();
+    }
+
+    // write back results
+    if (tid < n) g_keys[tid] = keys[i];
+    if (tid + block_threads < n) g_keys[tid + block_threads] = keys[i + block_threads];
+}
+
+__host__ void bitonic_sort(cudaStream_t stream, float* keys, int n) {
+    // for (int u = 1; u < n; u += u) {
+    //     CUDA_LAUNCH(global_sort_up, n, stream, keys, u);
+    //     for (int d = u/2; d > 0; d /= 2) {
+    //         CUDA_LAUNCH(global_sort_down, n, stream, keys, d);
+    //     }
+    // }
+
+    // use shared memory
+    const int n_shared = 2048; // must be power of two
+    const int n_threads_per_block = n_shared / 2;
+    int n_blocks = (n + n_threads_per_block - 1) / n_threads_per_block;
+    block_sort<n_shared><<<n_blocks, n_threads_per_block, 0, stream>>>(keys, n);
+
+    for (int u = n_shared; u < n; u += u) {
+        CUDA_LAUNCH(global_sort_up, n, stream, keys, u);
+        for (int d = u/2; d > n_shared/2; d /= 2) {
+            CUDA_LAUNCH(global_sort_down, n, stream, keys, d);
+        }
+        block_sort_down<n_shared><<<n_blocks, n_threads_per_block, 0, stream>>>(keys, n);
+    }
+
+    // // swap in cubit
+    // cubit::sort(keys, n, stream);
 }

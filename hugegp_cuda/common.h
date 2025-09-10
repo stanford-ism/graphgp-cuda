@@ -54,6 +54,12 @@ __forceinline__ __device__ float compute_square_distance(
     return dist;
 }
 
+template <typename T>
+__global__ void apply_permutation(T* dest, const T* src, const int* permutation, int n_threads) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    dest[tid] = src[permutation[tid]];
+}
 
 __global__ void compute_inverse_permutation(const int* permutation, int* inv_permutation, int n) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
