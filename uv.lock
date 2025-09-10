@@ -363,7 +363,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hugegp-cuda"
+name = "graphgp-cuda"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18...3.27)
-project(hugegp_cuda LANGUAGES CXX CUDA)
-message(STATUS "Project name: hugegp_cuda")
+project(graphgp_cuda LANGUAGES CXX CUDA)
+message(STATUS "Project name: graphgp_cuda")
 
 # Find Python
 find_package(Python 3.10 COMPONENTS Interpreter Development.Module REQUIRED)
@@ -16,6 +16,6 @@ message(STATUS "XLA include directory: ${XLA_DIR}")
 set(CMAKE_CUDA_ARCHITECTURES "89;90")
 
 # Add the shared library target
-add_library(hugegp_cuda SHARED xla_bindings.cu)
-target_include_directories(hugegp_cuda PRIVATE ${XLA_DIR})
-set_target_properties(hugegp_cuda PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(graphgp_cuda SHARED xla_bindings.cu)
+target_include_directories(graphgp_cuda PRIVATE ${XLA_DIR})
+set_target_properties(graphgp_cuda PROPERTIES POSITION_INDEPENDENT_CODE ON)

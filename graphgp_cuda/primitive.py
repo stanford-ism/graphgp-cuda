@@ -13,78 +13,78 @@ from jax import lax
 
 
 # Define custom primitive, the "refine" function is exposed
-refine_p = Primitive("hugegp_cuda_refine")
-refine_linear_transpose_p = Primitive("hugegp_cuda_refine_linear_transpose")
-refine_nonlinear_jvp_p = Primitive("hugegp_cuda_refine_nonlinear_jvp")
-refine_nonlinear_vjp_p = Primitive("hugegp_cuda_refine_nonlinear_vjp")
+refine_p = Primitive("graphgp_cuda_refine")
+refine_linear_transpose_p = Primitive("graphgp_cuda_refine_linear_transpose")
+refine_nonlinear_jvp_p = Primitive("graphgp_cuda_refine_nonlinear_jvp")
+refine_nonlinear_vjp_p = Primitive("graphgp_cuda_refine_nonlinear_vjp")
 
 
 def initialize():
     # Register CUDA bindings as FFI targets
     try:
-        so_path = next(Path(__file__).parent.glob("libhugegp_cuda*"))
-        hugegp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
+        so_path = next(Path(__file__).parent.glob("libgraphgp_cuda*"))
+        graphgp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
     except (StopIteration, OSError) as e:
-        raise RuntimeError(f"Failed to load hugegp_cuda library: {e}")
+        raise RuntimeError(f"Failed to load graphgp_cuda library: {e}")
 
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_refine_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.refine_ffi),
+        "graphgp_cuda_refine_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.refine_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_refine_linear_transpose_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.refine_linear_transpose_ffi),
+        "graphgp_cuda_refine_linear_transpose_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.refine_linear_transpose_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_refine_nonlinear_jvp_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.refine_nonlinear_jvp_ffi),
+        "graphgp_cuda_refine_nonlinear_jvp_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.refine_nonlinear_jvp_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_refine_nonlinear_vjp_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.refine_nonlinear_vjp_ffi),
+        "graphgp_cuda_refine_nonlinear_vjp_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.refine_nonlinear_vjp_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_build_tree_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.build_tree_ffi),
+        "graphgp_cuda_build_tree_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.build_tree_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_query_neighbors_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.query_neighbors_ffi),
+        "graphgp_cuda_query_neighbors_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.query_neighbors_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_query_preceding_neighbors_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.query_preceding_neighbors_ffi),
+        "graphgp_cuda_query_preceding_neighbors_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.query_preceding_neighbors_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_compute_depths_parallel_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_parallel_ffi),
+        "graphgp_cuda_compute_depths_parallel_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.compute_depths_parallel_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_compute_depths_serial_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.compute_depths_serial_ffi),
+        "graphgp_cuda_compute_depths_serial_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.compute_depths_serial_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_order_by_depth_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.order_by_depth_ffi),
+        "graphgp_cuda_order_by_depth_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.order_by_depth_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_build_graph_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.build_graph_ffi),
+        "graphgp_cuda_build_graph_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.build_graph_ffi),
         platform="gpu",
     )
     jax.ffi.register_ffi_target(
-        "hugegp_cuda_sort_ffi",
-        jax.ffi.pycapsule(hugegp_cuda_lib.sort_ffi),
+        "graphgp_cuda_sort_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.sort_ffi),
         platform="gpu",
     )
 
@@ -141,7 +141,7 @@ def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
 
 def refine_impl(*args):
     return jax.ffi.ffi_call(
-        "hugegp_cuda_refine_ffi",
+        "graphgp_cuda_refine_ffi",
         jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
     )(*args)
 
@@ -151,7 +151,7 @@ def refine_abstract_eval(*args):
 
 
 def refine_lowering(ctx, *args):
-    return jax.ffi.ffi_lowering("hugegp_cuda_refine_ffi")(ctx, *args)
+    return jax.ffi.ffi_lowering("graphgp_cuda_refine_ffi")(ctx, *args)
 
 
 def refine_value_and_jvp(primals, tangents):
@@ -259,7 +259,7 @@ def refine_nonlinear_jvp(
 
 def refine_nonlinear_jvp_impl(*args):
     return jax.ffi.ffi_call(
-        "hugegp_cuda_refine_nonlinear_jvp_ffi",
+        "graphgp_cuda_refine_nonlinear_jvp_ffi",
         (
             jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
             jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
@@ -275,7 +275,7 @@ def refine_nonlinear_jvp_abstract_eval(*args):
 
 
 def refine_nonlinear_jvp_lowering(ctx, *args):
-    return jax.ffi.ffi_lowering("hugegp_cuda_refine_nonlinear_jvp_ffi")(ctx, *args)
+    return jax.ffi.ffi_lowering("graphgp_cuda_refine_nonlinear_jvp_ffi")(ctx, *args)
 
 
 def refine_nonlinear_jvp_transpose_rule(tangents_out, *primals):
@@ -314,7 +314,7 @@ def refine_nonlinear_vjp(
 
 def refine_nonlinear_vjp_impl(*args):
     return jax.ffi.ffi_call(
-        "hugegp_cuda_refine_nonlinear_vjp_ffi",
+        "graphgp_cuda_refine_nonlinear_vjp_ffi",
         (
             jax.ShapeDtypeStruct(args[7].shape, jnp.float32),
             jax.ShapeDtypeStruct(args[4].shape, jnp.float32),
@@ -334,7 +334,7 @@ def refine_nonlinear_vjp_abstract_eval(*args):
 
 
 def refine_nonlinear_vjp_lowering(ctx, *args):
-    return jax.ffi.ffi_lowering("hugegp_cuda_refine_nonlinear_vjp_ffi")(ctx, *args)
+    return jax.ffi.ffi_lowering("graphgp_cuda_refine_nonlinear_vjp_ffi")(ctx, *args)
 
 
 # ========== refine_linear_transpose primitive ==========
@@ -346,7 +346,7 @@ def refine_linear_transpose(points, neighbors, offsets, cov_bins, cov_vals, valu
 
 def refine_linear_transpose_impl(*args):
     return jax.ffi.ffi_call(
-        "hugegp_cuda_refine_linear_transpose_ffi",
+        "graphgp_cuda_refine_linear_transpose_ffi",
         (
             jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
             jax.ShapeDtypeStruct(
@@ -366,7 +366,7 @@ def refine_linear_transpose_abstract_eval(*args):
 
 
 def refine_linear_transpose_lowering(ctx, *args):
-    return jax.ffi.ffi_lowering("hugegp_cuda_refine_linear_transpose_ffi")(ctx, *args)
+    return jax.ffi.ffi_lowering("graphgp_cuda_refine_linear_transpose_ffi")(ctx, *args)
 
 
 def refine_linear_transpose_value_and_jvp(primals, tangents):
@@ -432,7 +432,7 @@ def refine_linear_transpose_batch(vector_args, batch_axes):
 
 def build_tree(points):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_build_tree_ffi",
+        "graphgp_cuda_build_tree_ffi",
         (
             jax.ShapeDtypeStruct(points.shape, jnp.float32),
             jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
@@ -447,7 +447,7 @@ def build_tree(points):
 
 def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_query_neighbors_ffi",
+        "graphgp_cuda_query_neighbors_ffi",
         jax.ShapeDtypeStruct((query_indices.shape[0], k), jnp.int32),
     )
     neighbors = call(points, split_dims, query_indices, max_indices)
@@ -456,7 +456,7 @@ def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
 
 def query_preceding_neighbors(points, split_dims, *, n0, k):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_query_preceding_neighbors_ffi",
+        "graphgp_cuda_query_preceding_neighbors_ffi",
         jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
     )
     neighbors = call(points, split_dims)
@@ -465,7 +465,7 @@ def query_preceding_neighbors(points, split_dims, *, n0, k):
 
 def compute_depths_parallel(neighbors, *, n0):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_compute_depths_parallel_ffi",
+        "graphgp_cuda_compute_depths_parallel_ffi",
         (
             jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
             jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
@@ -477,7 +477,7 @@ def compute_depths_parallel(neighbors, *, n0):
 
 def compute_depths_serial(neighbors, *, n0):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_compute_depths_serial_ffi",
+        "graphgp_cuda_compute_depths_serial_ffi",
         jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32)
     )
     depths = call(neighbors)
@@ -486,7 +486,7 @@ def compute_depths_serial(neighbors, *, n0):
 
 def order_by_depth(points, indices, neighbors, depths):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_order_by_depth_ffi",
+        "graphgp_cuda_order_by_depth_ffi",
         (
             jax.ShapeDtypeStruct(points.shape, jnp.float32),
             jax.ShapeDtypeStruct(indices.shape, jnp.int32),
@@ -501,7 +501,7 @@ def order_by_depth(points, indices, neighbors, depths):
 
 def build_graph(points, *, n0, k):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_build_graph_ffi",
+        "graphgp_cuda_build_graph_ffi",
         (
             jax.ShapeDtypeStruct(points.shape, jnp.float32),
             jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
@@ -515,7 +515,7 @@ def build_graph(points, *, n0, k):
 
 def sort(keys):
     call = jax.ffi.ffi_call(
-        "hugegp_cuda_sort_ffi",
+        "graphgp_cuda_sort_ffi",
         jax.ShapeDtypeStruct(keys.shape, jnp.float32),
     )
     keys_sorted = call(keys)

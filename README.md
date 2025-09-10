@@ -1,1 +1,1 @@
-# hugegp-cuda
+# graphgp-cuda
