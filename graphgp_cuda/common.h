@@ -54,11 +54,52 @@ __forceinline__ __device__ float compute_square_distance(
     return dist;
 }
 
+// permute a row of values into 1d temp array 
 template <typename T>
-__global__ void apply_permutation(T* dest, const T* src, const int* permutation, int n_threads) {
+__global__ void permute_row(const T* values, T* temp, const int* permutation, int n_dim, int d, int shift, int n_threads) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
-    dest[tid] = src[permutation[tid]];
+    temp[tid] = values[(permutation[tid] - shift) * n_dim + d];
+}
+
+// copy a row of values into 1d temp array
+template <typename T>
+__global__ void copy_row(const T* values, T* temp, int n_dim, int d, int n_threads) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    temp[tid] = values[tid * n_dim + d];
+}
+
+// copy a row of values into 1d temp array
+template <typename T>
+__global__ void copy_row_indices(const T* values, const int* indices, T* temp, int n_dim, int d, int n_threads) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    temp[tid] = values[indices[tid] * n_dim + d];
+}
+
+// copy a row of values into 1d temp array
+template <typename T>
+__global__ void copy_row_indices_split_dims(const T* values, const int* indices, const int* split_dims, T* temp, int n_dim, int n_threads) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    temp[tid] = values[indices[tid] * n_dim + split_dims[tid]];
+}
+
+// copy from 1d temp array back to a row of values
+template <typename T>
+__global__ void copy_row_back(T* values, const T* temp, int n_dim, int d, int n_threads) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    values[tid * n_dim + d] = temp[tid];
+}
+
+template <typename T>
+__host__ void permute(cudaStream_t stream, T* values, T* temp, const int* permutation, int n_dim, int shift, int n) {
+    for (int d = 0; d < n_dim; ++d) {
+        CUDA_LAUNCH(permute_row, n, stream, values, temp, permutation, n_dim, d, shift);
+        CUDA_LAUNCH(copy_row_back, n, stream, values, temp, n_dim, d);
+    }
 }
 
 __global__ void compute_inverse_permutation(const int* permutation, int* inv_permutation, int n) {

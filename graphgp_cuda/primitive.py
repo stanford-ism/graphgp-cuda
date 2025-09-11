@@ -132,6 +132,11 @@ def initialize():
     refine_nonlinear_vjp_p.multiple_results = True
 
 
+def cast_all(*args):
+    dtypes = [arg.dtype for arg in args]
+    target_dtypes = [jnp.float32 if dt in [jnp.float32, jnp.float64] else jnp.int32 if dt in [jnp.int32, jnp.int64] else dt for dt in dtypes]
+    return tuple(jnp.asarray(arg, dtype=dt) for arg, dt in zip(args, target_dtypes))
+
 # ================== refine primitive ====================
 
 
@@ -143,7 +148,7 @@ def refine_impl(*args):
     return jax.ffi.ffi_call(
         "graphgp_cuda_refine_ffi",
         jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
-    )(*args)
+    )(*cast_all(*args))
 
 
 def refine_abstract_eval(*args):
@@ -264,7 +269,7 @@ def refine_nonlinear_jvp_impl(*args):
             jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
             jax.ShapeDtypeStruct(args[6].shape[:-1] + (args[0].shape[0],), jnp.float32),
         ),
-    )(*args)
+    )(*cast_all(*args))
 
 
 def refine_nonlinear_jvp_abstract_eval(*args):
@@ -321,7 +326,7 @@ def refine_nonlinear_vjp_impl(*args):
             jax.ShapeDtypeStruct(args[5].shape, jnp.float32),
             jax.ShapeDtypeStruct(args[6].shape, jnp.float32),
         ),
-    )(*args)
+    )(*cast_all(*args))
 
 
 def refine_nonlinear_vjp_abstract_eval(*args):
@@ -354,7 +359,7 @@ def refine_linear_transpose_impl(*args):
             ),
             jax.ShapeDtypeStruct(args[5].shape[:-1] + (args[1].shape[0],), jnp.float32),
         ),
-    )(*args)
+    )(*cast_all(*args))
 
 
 def refine_linear_transpose_abstract_eval(*args):
@@ -441,7 +446,7 @@ def build_tree(points):
             jax.ShapeDtypeStruct((points.shape[0],), jnp.float32),
         ),
     )
-    points, split_dims, indices, tags, ranges = call(points)
+    points, split_dims, indices, tags, ranges = call(*cast_all(points))
     return points, split_dims, indices
 
 
@@ -450,7 +455,7 @@ def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
         "graphgp_cuda_query_neighbors_ffi",
         jax.ShapeDtypeStruct((query_indices.shape[0], k), jnp.int32),
     )
-    neighbors = call(points, split_dims, query_indices, max_indices)
+    neighbors = call(*cast_all(points, split_dims, query_indices, max_indices))
     return neighbors
 
 
@@ -459,7 +464,7 @@ def query_preceding_neighbors(points, split_dims, *, n0, k):
         "graphgp_cuda_query_preceding_neighbors_ffi",
         jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
     )
-    neighbors = call(points, split_dims)
+    neighbors = call(*cast_all(points, split_dims))
     return neighbors
 
 
@@ -471,7 +476,7 @@ def compute_depths_parallel(neighbors, *, n0):
             jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
         ),
     )
-    depths, temp = call(neighbors)
+    depths, temp = call(*cast_all(neighbors))
     return depths
 
 
@@ -480,7 +485,7 @@ def compute_depths_serial(neighbors, *, n0):
         "graphgp_cuda_compute_depths_serial_ffi",
         jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32)
     )
-    depths = call(neighbors)
+    depths = call(*cast_all(neighbors))
     return depths
 
 
@@ -495,7 +500,7 @@ def order_by_depth(points, indices, neighbors, depths):
             jax.ShapeDtypeStruct((2 * depths.shape[0],), jnp.int32),
         ),
     )
-    points, indices, neighbors, depths, temp = call(points, indices, neighbors, depths)
+    points, indices, neighbors, depths, temp = call(*cast_all(points, indices, neighbors, depths))
     return points, indices, neighbors, depths
 
 
@@ -510,7 +515,7 @@ def build_graph(points, *, n0, k):
             jax.ShapeDtypeStruct((2 * points.shape[0],), jnp.int32),
         ),
     )
-    points, indices, neighbors, depths, temp = call(points)
+    points, indices, neighbors, depths, temp = call(*cast_all(points))
     return points, indices, neighbors, depths
 
 def sort(keys):
@@ -518,5 +523,5 @@ def sort(keys):
         "graphgp_cuda_sort_ffi",
         jax.ShapeDtypeStruct(keys.shape, jnp.float32),
     )
-    keys_sorted = call(keys)
+    keys_sorted = call(*cast_all(keys))
     return keys_sorted

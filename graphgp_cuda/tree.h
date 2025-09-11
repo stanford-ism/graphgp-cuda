@@ -127,6 +127,3 @@ __host__ void build_tree(
         CUDA_LAUNCH(update_tags, n_remaining, stream, tags, split_dims, ranges, n_above);
     }
 }
-
-
-

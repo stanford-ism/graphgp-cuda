@@ -50,6 +50,7 @@ __host__ void compute_depths_parallel(
     int* old_depths = temp;
     cudaMemsetAsync(new_depths, 0, n_points * sizeof(int), stream);
     cudaMemsetAsync(old_depths, -1, n_points * sizeof(int), stream);
+    cudaMemsetAsync(old_depths, 0, n0 * sizeof(int), stream);
 
     // flag for when depths change
     int changed = 1;
@@ -99,13 +100,11 @@ __global__ void compute_depths_serial(
     }
 }
 
-__global__ void reindex_neighbors(int* neighbors, int* inv_permutation, int n_threads) {
+__global__ void reindex_neighbors(int* neighbors, const int* inv_permutation, int n_threads) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
     neighbors[tid] = inv_permutation[neighbors[tid]];
 }
-
-
 
 __host__ void order_by_depth(
     cudaStream_t stream,
@@ -114,7 +113,7 @@ __host__ void order_by_depth(
     int* neighbors, // (N - n0, k)
     int* depths, // (N,)
     int* permutation, // (N,)
-    int* inverse_permutation, // (N,)
+    int* temp, // (N,)
     int n0,
     int k,
     int n_points,
@@ -123,24 +122,15 @@ __host__ void order_by_depth(
 
     // sort by depth, tracking permutation
     CUDA_LAUNCH(arange_kernel, n_points, stream, permutation);
-    // sort_by_depth(stream, points + n0 * n_dim, indices + n0, neighbors, depths + n0, permutation + n0, n_dim, k, n_points - n0);
-    cubit::sort(depths + n0, permutation + n0, n_points - n0, stream);
+    sort(stream, depths + n0, permutation + n0, n_points - n0);
 
-    // permute arrays one-by-one, using inverse_permutation as temp array
-    int* temp_int = inverse_permutation;
-    CUDA_LAUNCH(apply_permutation, n_points, stream, temp_int, indices, permutation);
-    cudaMemcpyAsync(indices, temp_int, n_points * sizeof(int), cudaMemcpyDeviceToDevice, stream);
-    for (int i = 0; i < k; ++i) {
-        CUDA_LAUNCH(apply_permutation, (n_points - n0), stream, temp_int, neighbors + i * (n_points - n0) - n0, permutation + n0); // tricky, first n0 don't exist
-        cudaMemcpyAsync(neighbors + i * (n_points - n0), temp_int, (n_points - n0) * sizeof(int), cudaMemcpyDeviceToDevice, stream);
-    }
-    float* temp_float = reinterpret_cast<float*>(inverse_permutation); // reuse temp as float array
-    for (int i = 0; i < n_dim; ++i) {
-        CUDA_LAUNCH(apply_permutation, n_points, stream, temp_float, points + i * n_points, permutation);
-        cudaMemcpyAsync(points + i * n_points, temp_float, n_points * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    }
+    // permute arrays one-by-one
+    float* temp_float = reinterpret_cast<float*>(temp);
+    permute(stream, points, temp_float, permutation, n_dim, 0, n_points);
+    permute(stream, indices, temp, permutation, 1, 0, n_points);
+    permute(stream, neighbors, temp, permutation + n0, k, n0, n_points - n0); // tricky, first n0 don't exist
 
     // update neighbors to point to new indices
-    CUDA_LAUNCH(compute_inverse_permutation, n_points, stream, permutation, inverse_permutation);
-    CUDA_LAUNCH(reindex_neighbors, (n_points - n0) * k, stream, neighbors, inverse_permutation);
+    CUDA_LAUNCH(compute_inverse_permutation, n_points, stream, permutation, temp);
+    CUDA_LAUNCH(reindex_neighbors, (n_points - n0) * k, stream, neighbors, temp);
 }

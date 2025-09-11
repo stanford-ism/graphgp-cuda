@@ -589,11 +589,12 @@ Error build_graph_ffi_impl(
     cudaMemcpyAsync(points, points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     build_tree(
         stream,
+        // points_in.typed_data(),
         points,
         depths, // use depths as split_dims
         indices,
-        temp, // tags
-        reinterpret_cast<float*>(temp + n_points), // ranges
+        temp, // use temp for tags
+        reinterpret_cast<float*>(temp + n_points), // use temp for permutation
         n_dim,
         n_points
     );
@@ -631,7 +632,7 @@ Error sort_ffi_impl(
 ) {
     int n = keys_in.dimensions()[0];
     cudaMemcpyAsync(keys_out->typed_data(), keys_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    bitonic_sort(stream, keys_out->typed_data(), n);
+    sort(stream, keys_out->typed_data(), n);
     return Error::Success();
 }
 
