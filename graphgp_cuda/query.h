@@ -34,9 +34,9 @@ __global__ void query_preceding_neighbors_kernel(
     int k,
     int n_threads
 ) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= n_threads) return;
-    int query_idx = idx + n0;
+    size_t query_idx = idx + n0;
 
     // load query point
     float query[N_DIM];
@@ -65,7 +65,7 @@ __global__ void query_preceding_neighbors_kernel(
 
         // update neighbor array if necessary
         if (previous == parent) {
-            float current_distance = compute_square_distance(points + current * N_DIM, query, N_DIM);
+            float current_distance = compute_square_distance(points + current * (size_t)N_DIM, query, N_DIM);
             if (current_distance < max_distance) {
                 insert_neighbor(neighbors, distances, current, current_distance, k);
                 max_distance = distances[k - 1];
@@ -74,7 +74,7 @@ __global__ void query_preceding_neighbors_kernel(
 
         // locate children and determine if far child in range
         int split_dim = split_dims[current];
-        float split_distance = query[split_dim] - points[current * N_DIM + split_dim];
+        float split_distance = query[split_dim] - points[current * (size_t)N_DIM + split_dim];
         int near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
         int far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
         bool far_in_range = (far_child < query_idx) & (split_distance * split_distance <= max_distance);
@@ -92,6 +92,14 @@ __global__ void query_preceding_neighbors_kernel(
         }
         previous = current;
         current = next;
+
+        // next =
+        //     (previous == parent)
+        //         ? ((near_child < query_idx) ? near_child
+        //                                     : (far_in_range ? far_child : parent))
+        //         : ((previous == near_child)
+        //             ? (far_in_range ? far_child : parent)
+        //             : parent);
     }
 
     // write neighbors to output
@@ -112,9 +120,9 @@ __global__ void query_neighbors_kernel(
     int n_points, 
     int n_queries
 ) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_queries) return;
-    int query_index = query_indices[tid];
+    size_t query_index = query_indices[tid];
     int max_index = max_indices[tid];
 
     // load query point
@@ -144,7 +152,7 @@ __global__ void query_neighbors_kernel(
 
         // update neighbor array if necessary
         if (previous == parent) {
-            float current_distance = compute_square_distance(points + current * N_DIM, query, N_DIM);
+            float current_distance = compute_square_distance(points + current * (size_t)N_DIM, query, N_DIM);
             if (current_distance < max_distance) {
                 insert_neighbor(neighbors, distances, current, current_distance, k);
                 max_distance = distances[k - 1];
@@ -153,7 +161,7 @@ __global__ void query_neighbors_kernel(
 
         // locate children and determine if far child in range
         int split_dim = split_dims[current];
-        float split_distance = query[split_dim] - points[current * N_DIM + split_dim];
+        float split_distance = query[split_dim] - points[current * (size_t)N_DIM + split_dim];
         int near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
         int far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
         bool far_in_range = (far_child < max_index) & (split_distance * split_distance <= max_distance);

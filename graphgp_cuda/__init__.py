@@ -9,6 +9,8 @@ from .primitive import (
     order_by_depth,
     build_graph,
     sort,
+    sort_three,
+    sort_four,
 )
 
 initialize()
@@ -23,4 +25,6 @@ __all__ = [
     "order_by_depth",
     "build_graph",
     "sort",
+    "sort_three",
+    "sort_four",
 ]

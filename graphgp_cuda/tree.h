@@ -54,11 +54,10 @@ __forceinline__ __device__ int compute_segment_end(int tag, int n_above, int n_r
 
 __global__ void update_ranges(
     const int* tags,
-    const float* points,
+    const float* points_1d,
     float* ranges,
     int* split_dims,
     int dim,
-    int n_dim,
     int n_above,
     int n_threads
 ) {
@@ -69,8 +68,8 @@ __global__ void update_ranges(
     int tag = tags[i];
     int start = compute_segment_start(tag, n_above, n_threads);
     int end = compute_segment_end(tag, n_above, n_threads);
-    float start_val = points[start * n_dim + dim];
-    float end_val = points[(end - 1) * n_dim + dim];
+    float start_val = points_1d[start];
+    float end_val = points_1d[end - 1];
     float dim_range = abs(end_val - start_val);
     if (dim_range > ranges[i]) {
         ranges[i] = dim_range;
@@ -78,7 +77,7 @@ __global__ void update_ranges(
     }
 }
 
-__global__ void update_tags(int* tags, int* split_dims, float* ranges, int n_above, int n_threads) {
+__global__ void update_tags(int* tags, int n_above, int n_threads) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_threads) return;
     int i = n_above + idx;
@@ -90,12 +89,11 @@ __global__ void update_tags(int* tags, int* split_dims, float* ranges, int n_abo
     if (i == midpoint) return;
     if (i < midpoint) tags[i] = compute_left(tag);
     else if (i > midpoint) tags[i] = compute_right(tag);
-    split_dims[i] = 0; // reset for next iteration
-    ranges[i] = 0.0f;
 }
 
 __host__ void build_tree(
     cudaStream_t stream,
+    const float* points_in, // (N, d)
     float* points, // (N, d)
     int* split_dims, // (N,)
     int* indices, // (N,)
@@ -116,14 +114,25 @@ __host__ void build_tree(
         int n_above = (1 << level) - 1;
         int n_remaining = n_points - n_above;
 
-        // sort segments along each dimension and store the dimension with largest range in split_dims
-        for (int dim = 0; dim < n_dim; ++ dim) {
-            sort_points(stream, tags, points, split_dims, indices, ranges, dim, n_dim, n_points);
-            CUDA_LAUNCH(update_ranges, n_remaining, stream, tags, points, ranges, split_dims, dim, n_dim, n_above);
+        // compute split_dim with the largest range
+        for (int dim = 0; dim < n_dim; ++dim) {
+            CUDA_LAUNCH(copy_row_indices, n_points, stream, points_in, indices, points, n_dim, dim);
+            if (dim == 0) {
+                sort(tags, points, indices, split_dims, n_points, stream); // tags move, must move split_dims and track points
+                cudaMemsetAsync(split_dims + n_above, 0, n_remaining * sizeof(int), stream);
+                cudaMemsetAsync(ranges + n_above, 0, n_remaining * sizeof(float), stream);
+            } else {
+                sort(tags, points, n_points, stream); // doesn't move tags, don't need to move split_dims or indices
+            }
+            CUDA_LAUNCH(update_ranges, n_remaining, stream, tags, points, ranges, split_dims, dim, n_above);
         }
 
-        // sort along split dimension and update tags for next level
-        sort_points(stream, tags, points, split_dims, indices, ranges, int(-1), n_dim, n_points);
-        CUDA_LAUNCH(update_tags, n_remaining, stream, tags, split_dims, ranges, n_above);
+        // sort along split_dim and update tags
+        CUDA_LAUNCH(copy_row_indices_split_dims, n_points, stream, points_in, indices, split_dims, points, n_dim);
+        sort(tags, points, indices, n_points, stream); // doesn't move tags, split_dims is same, must track points
+        CUDA_LAUNCH(update_tags, n_remaining, stream, tags, n_above);
     }
+    
+    // final permutation of points
+    CUDA_LAUNCH(permute_rows, n_points * n_dim, stream, points_in, points, indices, n_dim); 
 }

@@ -54,44 +54,53 @@ __forceinline__ __device__ float compute_square_distance(
     return dist;
 }
 
-// permute a row of values into 1d temp array 
-template <typename T>
-__global__ void permute_row(const T* values, T* temp, const int* permutation, int n_dim, int d, int shift, int n_threads) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= n_threads) return;
-    temp[tid] = values[(permutation[tid] - shift) * n_dim + d];
-}
-
 // copy a row of values into 1d temp array
 template <typename T>
 __global__ void copy_row(const T* values, T* temp, int n_dim, int d, int n_threads) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
-    temp[tid] = values[tid * n_dim + d];
+    temp[tid] = values[tid * (size_t)n_dim + d];
 }
 
 // copy a row of values into 1d temp array
 template <typename T>
 __global__ void copy_row_indices(const T* values, const int* indices, T* temp, int n_dim, int d, int n_threads) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
-    temp[tid] = values[indices[tid] * n_dim + d];
+    temp[tid] = values[indices[tid] * (size_t)n_dim + d];
 }
 
 // copy a row of values into 1d temp array
 template <typename T>
 __global__ void copy_row_indices_split_dims(const T* values, const int* indices, const int* split_dims, T* temp, int n_dim, int n_threads) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
-    temp[tid] = values[indices[tid] * n_dim + split_dims[tid]];
+    temp[tid] = values[indices[tid] * (size_t)n_dim + split_dims[tid]];
 }
 
 // copy from 1d temp array back to a row of values
 template <typename T>
 __global__ void copy_row_back(T* values, const T* temp, int n_dim, int d, int n_threads) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
-    values[tid * n_dim + d] = temp[tid];
+    values[tid * (size_t)n_dim + d] = temp[tid];
+}
+
+// permute a row of values into 1d temp array 
+template <typename T>
+__global__ void permute_row(const T* values, T* temp, const int* permutation, int n_dim, int d, int shift, int n_threads) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    temp[tid] = values[(permutation[tid] - shift) * (size_t)n_dim + d];
+}
+
+template <typename T>
+__global__ void permute_rows(const T* values_in, T* values_out, const int* permutation, int n_dim, int n_threads) {
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= n_threads) return;
+    int row = tid / n_dim;
+    int col = tid % n_dim;
+    values_out[tid] = values_in[permutation[row] * (size_t)n_dim + col];
 }
 
 template <typename T>

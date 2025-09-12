@@ -361,11 +361,12 @@ Error build_tree_ffi_impl(
     ResultBuffer<S32> tags, // (N,)
     ResultBuffer<F32> ranges // (N,)
 ) {
-    int n_points = points_in.dimensions()[0];
+    size_t n_points = points_in.dimensions()[0];
     int n_dim = points_in.dimensions()[1];
     cudaMemcpyAsync(points->typed_data(), points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     build_tree(
         stream,
+        points_in.typed_data(),
         points->typed_data(),
         split_dims->typed_data(),
         indices->typed_data(),
@@ -522,7 +523,7 @@ Error order_by_depth_ffi_impl(
     ResultBuffer<S32> depths_out,
     ResultBuffer<S32> temp // (2*N,)
 ) {
-    int n_points = points_in.dimensions()[0];
+    size_t n_points = points_in.dimensions()[0];
     int n_dim = points_in.dimensions()[1];
     int n0 = n_points - neighbors_in.dimensions()[0];
     int k = neighbors_in.dimensions()[1];
@@ -574,7 +575,7 @@ Error build_graph_ffi_impl(
     ResultBuffer<S32> depths_out, // (N, )
     ResultBuffer<S32> temp_out // (2*N,)
 ) {
-    int n_points = points_in.dimensions()[0];
+    size_t n_points = points_in.dimensions()[0];
     int n_dim = points_in.dimensions()[1];
     int n0 = n_points - neighbors_out->dimensions()[0];
     int k = neighbors_out->dimensions()[1];
@@ -589,12 +590,12 @@ Error build_graph_ffi_impl(
     cudaMemcpyAsync(points, points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     build_tree(
         stream,
-        // points_in.typed_data(),
+        points_in.typed_data(),
         points,
         depths, // use depths as split_dims
         indices,
         temp, // use temp for tags
-        reinterpret_cast<float*>(temp + n_points), // use temp for permutation
+        reinterpret_cast<float*>(temp + n_points), // use temp for ranges
         n_dim,
         n_points
     );
@@ -632,7 +633,7 @@ Error sort_ffi_impl(
 ) {
     int n = keys_in.dimensions()[0];
     cudaMemcpyAsync(keys_out->typed_data(), keys_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    sort(stream, keys_out->typed_data(), n);
+    sort(keys_out->typed_data(), n, stream);
     return Error::Success();
 }
 
@@ -642,4 +643,67 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>()  // keys_in
         .Ret<Buffer<F32>>()  // keys_out
+);
+
+Error sort_three_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> keys1_in,
+    Buffer<F32> keys2_in,
+    Buffer<F32> keys3_in,
+    ResultBuffer<F32> keys1_out,
+    ResultBuffer<F32> keys2_out,
+    ResultBuffer<F32> keys3_out
+) {
+    int n = keys1_in.dimensions()[0];
+    cudaMemcpyAsync(keys1_out->typed_data(), keys1_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(keys2_out->typed_data(), keys2_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(keys3_out->typed_data(), keys3_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    sort(keys1_out->typed_data(), keys2_out->typed_data(), keys3_out->typed_data(), n, stream);
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    sort_three_ffi, sort_three_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>()  // keys1_in
+        .Arg<Buffer<F32>>()  // keys2_in
+        .Arg<Buffer<F32>>()  // keys3_in
+        .Ret<Buffer<F32>>()  // keys1_out
+        .Ret<Buffer<F32>>()  // keys2_out
+        .Ret<Buffer<F32>>()  // keys3_out
+);
+
+Error sort_four_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> keys1_in,
+    Buffer<F32> keys2_in,
+    Buffer<F32> keys3_in,
+    Buffer<F32> keys4_in,
+    ResultBuffer<F32> keys1_out,
+    ResultBuffer<F32> keys2_out,
+    ResultBuffer<F32> keys3_out,
+    ResultBuffer<F32> keys4_out
+) {
+    int n = keys1_in.dimensions()[0];
+    cudaMemcpyAsync(keys1_out->typed_data(), keys1_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(keys2_out->typed_data(), keys2_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(keys3_out->typed_data(), keys3_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(keys4_out->typed_data(), keys4_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    sort(keys1_out->typed_data(), keys2_out->typed_data(), keys3_out->typed_data(), keys4_out->typed_data(), n, stream);
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    sort_four_ffi, sort_four_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>()  // keys1_in
+        .Arg<Buffer<F32>>()  // keys2_in
+        .Arg<Buffer<F32>>()  // keys3_in
+        .Arg<Buffer<F32>>()  // keys4_in
+        .Ret<Buffer<F32>>()  // keys1_out
+        .Ret<Buffer<F32>>()  // keys2_out
+        .Ret<Buffer<F32>>()  // keys3_out
+        .Ret<Buffer<F32>>()  // keys4_out
 );

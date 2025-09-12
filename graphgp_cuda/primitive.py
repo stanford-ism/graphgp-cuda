@@ -10,6 +10,7 @@ from jax.core import ShapedArray
 from jax.extend.core import Primitive
 from jax.interpreters import mlir, batching, ad
 from jax import lax
+from jax.tree_util import Partial
 
 
 # Define custom primitive, the "refine" function is exposed
@@ -87,6 +88,16 @@ def initialize():
         jax.ffi.pycapsule(graphgp_cuda_lib.sort_ffi),
         platform="gpu",
     )
+    jax.ffi.register_ffi_target(
+        "graphgp_cuda_sort_three_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.sort_three_ffi),
+        platform="gpu",
+    )
+    jax.ffi.register_ffi_target(
+        "graphgp_cuda_sort_four_ffi",
+        jax.ffi.pycapsule(graphgp_cuda_lib.sort_four_ffi),
+        platform="gpu",
+    )
 
     # Register refine primitive
     refine_p.def_impl(refine_impl)
@@ -134,8 +145,16 @@ def initialize():
 
 def cast_all(*args):
     dtypes = [arg.dtype for arg in args]
-    target_dtypes = [jnp.float32 if dt in [jnp.float32, jnp.float64] else jnp.int32 if dt in [jnp.int32, jnp.int64] else dt for dt in dtypes]
+    target_dtypes = [
+        jnp.float32
+        if dt in [jnp.float32, jnp.float64]
+        else jnp.int32
+        if dt in [jnp.int32, jnp.int64]
+        else dt
+        for dt in dtypes
+    ]
     return tuple(jnp.asarray(arg, dtype=dt) for arg, dt in zip(args, target_dtypes))
+
 
 # ================== refine primitive ====================
 
@@ -434,7 +453,7 @@ def refine_linear_transpose_batch(vector_args, batch_axes):
 
 # ========== Graph construction (not differentiable) ==========
 
-
+@jax.jit
 def build_tree(points):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_build_tree_ffi",
@@ -449,7 +468,7 @@ def build_tree(points):
     points, split_dims, indices, tags, ranges = call(*cast_all(points))
     return points, split_dims, indices
 
-
+@Partial(jax.jit, static_argnames="k")
 def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_query_neighbors_ffi",
@@ -458,7 +477,7 @@ def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
     neighbors = call(*cast_all(points, split_dims, query_indices, max_indices))
     return neighbors
 
-
+@Partial(jax.jit, static_argnames=("n0", "k"))
 def query_preceding_neighbors(points, split_dims, *, n0, k):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_query_preceding_neighbors_ffi",
@@ -468,6 +487,7 @@ def query_preceding_neighbors(points, split_dims, *, n0, k):
     return neighbors
 
 
+@Partial(jax.jit, static_argnames="n0")
 def compute_depths_parallel(neighbors, *, n0):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_compute_depths_parallel_ffi",
@@ -479,16 +499,16 @@ def compute_depths_parallel(neighbors, *, n0):
     depths, temp = call(*cast_all(neighbors))
     return depths
 
-
+@Partial(jax.jit, static_argnames="n0")
 def compute_depths_serial(neighbors, *, n0):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_compute_depths_serial_ffi",
-        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32)
+        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
     )
     depths = call(*cast_all(neighbors))
     return depths
 
-
+@jax.jit
 def order_by_depth(points, indices, neighbors, depths):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_order_by_depth_ffi",
@@ -504,6 +524,7 @@ def order_by_depth(points, indices, neighbors, depths):
     return points, indices, neighbors, depths
 
 
+@Partial(jax.jit, static_argnames=("n0", "k"))
 def build_graph(points, *, n0, k):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_build_graph_ffi",
@@ -518,10 +539,36 @@ def build_graph(points, *, n0, k):
     points, indices, neighbors, depths, temp = call(*cast_all(points))
     return points, indices, neighbors, depths
 
+
 def sort(keys):
     call = jax.ffi.ffi_call(
         "graphgp_cuda_sort_ffi",
         jax.ShapeDtypeStruct(keys.shape, jnp.float32),
     )
     keys_sorted = call(*cast_all(keys))
+    return keys_sorted
+
+def sort_three(keys1, keys2, keys3):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_sort_three_ffi",
+        (
+            jax.ShapeDtypeStruct(keys1.shape, jnp.float32),
+            jax.ShapeDtypeStruct(keys2.shape, jnp.float32),
+            jax.ShapeDtypeStruct(keys3.shape, jnp.float32),
+        ),
+    )
+    keys_sorted = call(*cast_all(keys1, keys2, keys3))
+    return keys_sorted
+
+def sort_four(keys1, keys2, keys3, keys4):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_sort_four_ffi",
+        (
+            jax.ShapeDtypeStruct(keys1.shape, jnp.float32),
+            jax.ShapeDtypeStruct(keys2.shape, jnp.float32),
+            jax.ShapeDtypeStruct(keys3.shape, jnp.float32),
+            jax.ShapeDtypeStruct(keys4.shape, jnp.float32),
+        ),
+    )
+    keys_sorted = call(*cast_all(keys1, keys2, keys3, keys4))
     return keys_sorted

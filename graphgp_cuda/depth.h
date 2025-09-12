@@ -17,7 +17,7 @@ __global__ void update_depths_parallel(
     int k,
     int n_threads
 ) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= n_threads) return;
 
     int neighbor_depth;
@@ -91,7 +91,7 @@ __global__ void compute_depths_serial(
     for (int i = n0; i < n_points; ++i) {
         max_depth = 0;
         for (int j = 0; j < k; ++j) {
-            neighbor_depth = depths[neighbors[(i - n0) * k + j]];
+            neighbor_depth = depths[neighbors[(i - n0) * (size_t)k + j]];
             if (neighbor_depth > max_depth) {
                 max_depth = neighbor_depth;
             }
@@ -122,7 +122,7 @@ __host__ void order_by_depth(
 
     // sort by depth, tracking permutation
     CUDA_LAUNCH(arange_kernel, n_points, stream, permutation);
-    sort(stream, depths + n0, permutation + n0, n_points - n0);
+    sort(depths + n0, permutation + n0, n_points - n0, stream);
 
     // permute arrays one-by-one
     float* temp_float = reinterpret_cast<float*>(temp);
