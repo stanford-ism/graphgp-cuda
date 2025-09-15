@@ -6,142 +6,12 @@ import jax.numpy as jnp
 
 import numpy as np
 
+from jax import ShapeDtypeStruct
 from jax.core import ShapedArray
 from jax.extend.core import Primitive
 from jax.interpreters import mlir, batching, ad
 from jax import lax
 from jax.tree_util import Partial
-
-
-# Define custom primitive, the "refine" function is exposed
-refine_p = Primitive("graphgp_cuda_refine")
-refine_linear_transpose_p = Primitive("graphgp_cuda_refine_linear_transpose")
-refine_nonlinear_jvp_p = Primitive("graphgp_cuda_refine_nonlinear_jvp")
-refine_nonlinear_vjp_p = Primitive("graphgp_cuda_refine_nonlinear_vjp")
-
-
-def initialize():
-    # Register CUDA bindings as FFI targets
-    try:
-        so_path = next(Path(__file__).parent.glob("libgraphgp_cuda*"))
-        graphgp_cuda_lib = ctypes.cdll.LoadLibrary(str(so_path))
-    except (StopIteration, OSError) as e:
-        raise RuntimeError(f"Failed to load graphgp_cuda library: {e}")
-
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_refine_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.refine_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_refine_linear_transpose_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.refine_linear_transpose_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_refine_nonlinear_jvp_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.refine_nonlinear_jvp_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_refine_nonlinear_vjp_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.refine_nonlinear_vjp_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_build_tree_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.build_tree_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_query_neighbors_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.query_neighbors_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_query_preceding_neighbors_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.query_preceding_neighbors_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_compute_depths_parallel_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.compute_depths_parallel_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_compute_depths_serial_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.compute_depths_serial_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_order_by_depth_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.order_by_depth_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_build_graph_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.build_graph_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_sort_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.sort_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_sort_three_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.sort_three_ffi),
-        platform="gpu",
-    )
-    jax.ffi.register_ffi_target(
-        "graphgp_cuda_sort_four_ffi",
-        jax.ffi.pycapsule(graphgp_cuda_lib.sort_four_ffi),
-        platform="gpu",
-    )
-
-    # Register refine primitive
-    refine_p.def_impl(refine_impl)
-    refine_p.def_abstract_eval(refine_abstract_eval)
-    batching.primitive_batchers[refine_p] = refine_batch
-    mlir.register_lowering(refine_p, refine_lowering, platform="gpu")  # type: ignore
-    ad.primitive_jvps[refine_p] = refine_value_and_jvp
-    ad.primitive_transposes[refine_p] = refine_transpose_rule
-
-    # Register refine_linear_transpose primitive
-    refine_linear_transpose_p.def_impl(refine_linear_transpose_impl)
-    refine_linear_transpose_p.def_abstract_eval(refine_linear_transpose_abstract_eval)
-    batching.primitive_batchers[refine_linear_transpose_p] = refine_linear_transpose_batch
-    mlir.register_lowering(
-        refine_linear_transpose_p,
-        refine_linear_transpose_lowering,  # type: ignore
-        platform="gpu",
-    )
-    ad.primitive_jvps[refine_linear_transpose_p] = refine_linear_transpose_value_and_jvp
-    ad.primitive_transposes[refine_linear_transpose_p] = refine_linear_transpose_transpose_rule
-    refine_linear_transpose_p.multiple_results = True
-
-    # Register refine_nonlinear_jvp primitive
-    refine_nonlinear_jvp_p.def_impl(refine_nonlinear_jvp_impl)
-    refine_nonlinear_jvp_p.def_abstract_eval(refine_nonlinear_jvp_abstract_eval)
-    # batching.primitive_batchers[refine_nonlinear_jvp_p] = refine_nonlinear_jvp_batch
-    mlir.register_lowering(
-        refine_nonlinear_jvp_p,
-        refine_nonlinear_jvp_lowering,  # type: ignore
-        platform="gpu",
-    )
-    ad.primitive_transposes[refine_nonlinear_jvp_p] = refine_nonlinear_jvp_transpose_rule
-    refine_nonlinear_jvp_p.multiple_results = True
-
-    # Register refine_nonlinear_vjp primitive
-    refine_nonlinear_vjp_p.def_impl(refine_nonlinear_vjp_impl)
-    refine_nonlinear_vjp_p.def_abstract_eval(refine_nonlinear_vjp_abstract_eval)
-    mlir.register_lowering(
-        refine_nonlinear_vjp_p,
-        refine_nonlinear_vjp_lowering,  # type: ignore
-        platform="gpu",
-    )
-    refine_nonlinear_vjp_p.multiple_results = True
-
 
 def cast_all(*args):
     dtypes = [arg.dtype for arg in args]
@@ -154,6 +24,241 @@ def cast_all(*args):
         for dt in dtypes
     ]
     return tuple(jnp.asarray(arg, dtype=dt) for arg, dt in zip(args, target_dtypes))
+
+def register_ffi_primitive(cdll, function_name, abstract_eval, leading_is_batch, platform="gpu"):
+    """
+    Register a JAX primitive backed by an XLA FFI call. Mainly to reduce boilerplate, but
+    also handles batching rule if FFI function takes a leading batch dimension for some args.
+    """
+
+    name = f"graphgp_cuda_{function_name}"
+    jax.ffi.register_ffi_target(
+        name,
+        jax.ffi.pycapsule(getattr(cdll, function_name)),
+        platform=platform,
+    )
+    prim = Primitive(name)
+
+    def impl(*args):
+        abstract_out = abstract_eval(*args)
+        if isinstance(abstract_out, ShapedArray):
+            abstract_out = ShapeDtypeStruct(abstract_out.shape, abstract_out.dtype)
+        elif isinstance(abstract_out, tuple):
+            abstract_out = tuple(ShapeDtypeStruct(s.shape, s.dtype) for s in abstract_out)
+        return jax.ffi.ffi_call(
+            name,
+            abstract_out,
+        )(*args)
+
+    def lowering(ctx, *args):
+        return jax.ffi.ffi_lowering(name)(ctx, *args)
+
+    def batching_rule(vector_args, batch_axes):
+        bad_batch_args = tuple(
+            j for j, a in enumerate(batch_axes) if leading_is_batch[j] is False and a is not None
+        )
+        if len(bad_batch_args) > 0:
+            raise NotImplementedError(
+                f"Batching {name} not supported for arguments {bad_batch_args}."
+            )
+        (size,) = {
+            x.shape[bd] for x, bd in zip(vector_args, batch_axes) if bd is not batching.not_mapped
+        }
+        args = [batching.bdim_at_front(x, bd, size) for x, bd in zip(vector_args, batch_axes)]
+        out = prim.bind(*args)
+        return (out, (0,) * len(out))
+
+    prim.def_impl(impl)
+    prim.def_abstract_eval(abstract_eval)
+    batching.primitive_batchers[prim] = batching_rule
+    mlir.register_lowering(prim, lowering, platform=platform)
+    return prim, prim.bind
+
+def register_transposes(f_p, f_transpose_p, n_nonlinear=0, forward_buffers=0, backward_buffers=0):
+    """
+    Idea is we want to register two functions as transposes of each other.
+    We will require the nonlinear arguments to be the first n_nonlinear arguments, in the same order for both.
+    Sometimes the function will have buffer outputs which should be discarded, these should be the first outputs.
+    Otherwise we just pass the arguments through.
+    We should verify the nonlinear args are not undefined primals, and the linear args are.
+    If the output tangent is ad.Zero, return ad.Zero. If it's a tuple and not all ad.Zero, fill array in that case.
+    """
+    pass
+
+try:
+    so_path = next(Path(__file__).parent.glob("libgraphgp_cuda*"))
+    lib = ctypes.cdll.LoadLibrary(str(so_path))
+except (StopIteration, OSError) as e:
+    raise RuntimeError(f"Failed to load graphgp_cuda library: {e}")
+
+sort_p, sort = register_ffi_primitive(
+    lib, "sort_ffi", lambda keys: ShapedArray(keys.shape, jnp.float32), leading_is_batch=(False,)
+)
+
+# ----------------- refine primitives -------------------
+
+refine_p, refine = register_ffi_primitive(
+    lib,
+    "refine_ffi",
+    lambda p, n, o, cb, cv, iv, x: ShapedArray(iv.shape[:-1] + (p.shape[0],), jnp.float32),
+    leading_is_batch=(False, False, False, False, True, True, True),
+)
+
+refine_transpose_p, refine_transpose = register_ffi_primitive(
+    lib,
+    "refine_transpose_ffi",
+    lambda p, n, o, cb, cv, v: (
+        ShapedArray(v.shape, jnp.float32),
+        ShapedArray(v.shape[:-1] + (p.shape[0] - n.shape[0],), jnp.float32),
+        ShapedArray(v.shape[:-1] + (n.shape[0],), jnp.float32),
+    ),
+    leading_is_batch=(False, False, False, False, True, True),
+)
+refine_transpose_p.multiple_results = True
+
+refine_jvp_p, refine_jvp = register_ffi_primitive(
+    lib,
+    "refine_jvp_ffi",
+    lambda p, n, o, cb, cv, iv, x, cv_t, iv_t, x_t: (
+        ShapedArray(iv.shape[:-1] + (p.shape[0],), jnp.float32),
+        ShapedArray(iv.shape[:-1] + (p.shape[0],), jnp.float32),
+    ),
+    leading_is_batch=(False, False, False, False, True, True, True, True, True, True),
+)
+refine_jvp_p.multiple_results = True
+
+refine_vjp_p, refine_vjp = register_ffi_primitive(
+    lib,
+    "refine_vjp_ffi",
+    lambda p, n, o, cb, cv, iv, x, v, v_t: (
+        ShapedArray(v.shape, jnp.float32),
+        ShapedArray(cv.shape, jnp.float32),
+        ShapedArray(iv.shape, jnp.float32),
+        ShapedArray(x.shape, jnp.float32),
+    ),
+    leading_is_batch=(False, False, False, False, True, True, True, False, False),
+)
+refine_vjp_p.multiple_results = True
+
+register_transposes(refine_jvp_p, refine_vjp_p, n_nonlinear=7, forward_buffers=0, backward_buffers=1)
+register_transposes(refine_p, refine_transpose_p, n_nonlinear=3, forward_buffers=0, backward_buffers=1)
+
+
+def refine_value_and_jvp(primals, tangents):
+    p, n, o, cb, cv, iv, x = primals
+    p_t, n_t, o_t, cb_t, cv_t, iv_t, x_t = tangents
+
+    if any(type(t) is not ad.Zero for t in [p_t, n_t, o_t, cb_t]):
+        raise NotImplementedError(
+            "Differentiation for refine only supported for cov_vals, initial_values, and xi."
+        )
+
+    # handle ad.Zero for initial_values and xi
+    tangents = (
+        *tangents[:5],
+        lax.zeros_like_array(primals[5]) if type(tangents[5]) is ad.Zero else tangents[5],
+        lax.zeros_like_array(primals[6]) if type(tangents[6]) is ad.Zero else tangents[6],
+    )
+
+    if type(cv_t) is ad.Zero:  
+        v = refine(p, n, o, cb, cv, iv, x)
+        dv = refine(p, n, o, cb, cv, iv_t, x_t)
+    else:
+        v = refine(p, n, o, cb, cv, iv, x)
+        _, dv = refine_jvp(p, n, o, cb, cv, iv, x, cv_t, iv_t, x_t)
+    return v, dv
+
+# # Register refine primitive
+# refine_p.def_impl(refine_impl)
+# refine_p.def_abstract_eval(refine_abstract_eval)
+# batching.primitive_batchers[refine_p] = refine_batch
+# mlir.register_lowering(refine_p, refine_lowering, platform="gpu")  # type: ignore
+# ad.primitive_jvps[refine_p] = refine_value_and_jvp
+# ad.primitive_transposes[refine_p] = refine_transpose_rule
+
+
+# ---------------- graph construction (not differentiable) ----------------
+
+build_tree_p, build_tree = register_ffi_primitive(
+    lib,
+    "build_tree_ffi",
+    lambda points: (
+        ShapedArray(points.shape, jnp.float32),
+        ShapedArray((points.shape[0],), jnp.int32),
+        ShapedArray((points.shape[0],), jnp.int32),
+        ShapedArray((points.shape[0],), jnp.int32),
+        ShapedArray((points.shape[0],), jnp.float32),
+    ),
+    leading_is_batch=(False,),
+)
+build_tree = jax.jit(build_tree)
+
+
+
+@Partial(jax.jit, static_argnames=("n0", "k"))
+def query_preceding_neighbors(points, split_dims, *, n0, k):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_query_preceding_neighbors_ffi",
+        jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
+    )
+    neighbors = call(*cast_all(points, split_dims))
+    return neighbors
+
+
+@Partial(jax.jit, static_argnames="n0")
+def compute_depths_parallel(neighbors, *, n0):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_compute_depths_parallel_ffi",
+        (
+            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+        ),
+    )
+    depths, temp = call(*cast_all(neighbors))
+    return depths
+
+
+@Partial(jax.jit, static_argnames="n0")
+def compute_depths_serial(neighbors, *, n0):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_compute_depths_serial_ffi",
+        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+    )
+    depths = call(*cast_all(neighbors))
+    return depths
+
+
+@jax.jit
+def order_by_depth(points, indices, neighbors, depths):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_order_by_depth_ffi",
+        (
+            jax.ShapeDtypeStruct(points.shape, jnp.float32),
+            jax.ShapeDtypeStruct(indices.shape, jnp.int32),
+            jax.ShapeDtypeStruct(neighbors.shape, jnp.int32),
+            jax.ShapeDtypeStruct(depths.shape, jnp.int32),
+            jax.ShapeDtypeStruct((2 * depths.shape[0],), jnp.int32),
+        ),
+    )
+    points, indices, neighbors, depths, temp = call(*cast_all(points, indices, neighbors, depths))
+    return points, indices, neighbors, depths
+
+
+@Partial(jax.jit, static_argnames=("n0", "k"))
+def build_graph(points, *, n0, k):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_build_graph_ffi",
+        (
+            jax.ShapeDtypeStruct(points.shape, jnp.float32),
+            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
+            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct((2 * points.shape[0],), jnp.int32),
+        ),
+    )
+    points, indices, neighbors, depths, temp = call(*cast_all(points))
+    return points, indices, neighbors, depths
+
 
 
 # ================== refine primitive ====================
@@ -453,100 +558,9 @@ def refine_linear_transpose_batch(vector_args, batch_axes):
 
 # ========== Graph construction (not differentiable) ==========
 
-@jax.jit
-def build_tree(points):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_build_tree_ffi",
-        (
-            jax.ShapeDtypeStruct(points.shape, jnp.float32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.float32),
-        ),
-    )
-    points, split_dims, indices, tags, ranges = call(*cast_all(points))
-    return points, split_dims, indices
-
-@Partial(jax.jit, static_argnames="k")
-def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_query_neighbors_ffi",
-        jax.ShapeDtypeStruct((query_indices.shape[0], k), jnp.int32),
-    )
-    neighbors = call(*cast_all(points, split_dims, query_indices, max_indices))
-    return neighbors
-
-@Partial(jax.jit, static_argnames=("n0", "k"))
-def query_preceding_neighbors(points, split_dims, *, n0, k):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_query_preceding_neighbors_ffi",
-        jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
-    )
-    neighbors = call(*cast_all(points, split_dims))
-    return neighbors
 
 
-@Partial(jax.jit, static_argnames="n0")
-def compute_depths_parallel(neighbors, *, n0):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_compute_depths_parallel_ffi",
-        (
-            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
-            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
-        ),
-    )
-    depths, temp = call(*cast_all(neighbors))
-    return depths
 
-@Partial(jax.jit, static_argnames="n0")
-def compute_depths_serial(neighbors, *, n0):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_compute_depths_serial_ffi",
-        jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
-    )
-    depths = call(*cast_all(neighbors))
-    return depths
-
-@jax.jit
-def order_by_depth(points, indices, neighbors, depths):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_order_by_depth_ffi",
-        (
-            jax.ShapeDtypeStruct(points.shape, jnp.float32),
-            jax.ShapeDtypeStruct(indices.shape, jnp.int32),
-            jax.ShapeDtypeStruct(neighbors.shape, jnp.int32),
-            jax.ShapeDtypeStruct(depths.shape, jnp.int32),
-            jax.ShapeDtypeStruct((2 * depths.shape[0],), jnp.int32),
-        ),
-    )
-    points, indices, neighbors, depths, temp = call(*cast_all(points, indices, neighbors, depths))
-    return points, indices, neighbors, depths
-
-
-@Partial(jax.jit, static_argnames=("n0", "k"))
-def build_graph(points, *, n0, k):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_build_graph_ffi",
-        (
-            jax.ShapeDtypeStruct(points.shape, jnp.float32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((2 * points.shape[0],), jnp.int32),
-        ),
-    )
-    points, indices, neighbors, depths, temp = call(*cast_all(points))
-    return points, indices, neighbors, depths
-
-
-def sort(keys):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_sort_ffi",
-        jax.ShapeDtypeStruct(keys.shape, jnp.float32),
-    )
-    keys_sorted = call(*cast_all(keys))
-    return keys_sorted
 
 def sort_three(keys1, keys2, keys3):
     call = jax.ffi.ffi_call(
@@ -559,6 +573,7 @@ def sort_three(keys1, keys2, keys3):
     )
     keys_sorted = call(*cast_all(keys1, keys2, keys3))
     return keys_sorted
+
 
 def sort_four(keys1, keys2, keys3, keys4):
     call = jax.ffi.ffi_call(
