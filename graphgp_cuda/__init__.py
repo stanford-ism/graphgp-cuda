@@ -1,6 +1,8 @@
 from .primitive import (
     initialize,
     refine,
+    refine_inv,
+    refine_logdet,
     build_tree,
     query_preceding_neighbors,
     compute_depths_parallel,
@@ -12,6 +14,8 @@ initialize()
 
 __all__ = [
     "refine",
+    "refine_inv",
+    "refine_logdet",
     "build_tree",
     "query_preceding_neighbors",
     "compute_depths_parallel",

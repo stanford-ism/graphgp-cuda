@@ -93,15 +93,7 @@ __global__ void copy_row_back(const T* src, T* dest, size_t n_dim, size_t d, siz
     dest[tid * n_dim + d] = src[tid];
 }
 
-// copy row from (N, d) int (N,) using permutation indices and along dims
-template <typename T, typename i_t>
-__global__ void copy_row_indices_dims(const T* src, const i_t* indices, const i_t* dims, T* dest, size_t n_dim, size_t n) {
-    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    dest[tid] = src[indices[tid] * n_dim + dims[tid]];
-}
-
-// permute a row of values into 1d temp array
+// permute a row of values into 1d temp array (DANGER: must have all permutation values >= shift)
 template <typename T, typename i_t>
 __global__ void permute_row(const T* src, const i_t* permutation, T* dest, size_t n_dim, size_t d, size_t shift, size_t n) {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -109,7 +101,7 @@ __global__ void permute_row(const T* src, const i_t* permutation, T* dest, size_
     dest[tid] = src[(permutation[tid] - shift) * n_dim + d];
 }
 
-// permute a row of values into 1d temp array
+// permute a row of values into 1d temp array (DANGER: must have all permutation values >= shift)
 template <typename T, typename i_t>
 __global__ void permute_row_with_dims(const T* src, const i_t* permutation, const i_t* dims, T* dest, size_t n_dim, size_t shift, size_t n) {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;

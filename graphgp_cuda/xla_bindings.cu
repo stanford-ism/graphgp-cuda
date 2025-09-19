@@ -11,6 +11,8 @@
 #include "query.h"
 #include "depth.h"
 #include "refine.h"
+#include "refine_inv.h"
+#include "refine_logdet.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -345,6 +347,128 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // initial_values_tangent
         .Ret<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent_buffer
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_inv_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> neighbors, // (N - n0, k)
+    Buffer<S32> offsets, // (B,) marking the ends of each batch
+    Buffer<F32> cov_bins, // (R,)
+    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> values, // (B1, B2, ..., N)
+    ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
+    ResultBuffer<F32> xi // (B1, B2, ..., N - n0)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    // handle both unbatched and arbitrarily batched cases
+    size_t n_batches = 1;
+    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= cov_vals.dimensions()[i];
+    }
+
+    decltype(&refine_inv<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, refine_inv);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(), 
+        offsets.typed_data(),
+        cov_bins.typed_data(),
+        cov_vals.typed_data(),
+        values.typed_data(),
+        initial_values->typed_data(),
+        xi->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_cov,
+        n_batches
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_inv_ffi, refine_inv_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // cov_bins
+        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // values
+        .Ret<Buffer<F32>>() // initial_values
+        .Ret<Buffer<F32>>() // xi
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_logdet_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> neighbors, // (N - n0, k)
+    Buffer<S32> offsets, // (B,) marking the ends of each batch
+    Buffer<F32> cov_bins, // (R,)
+    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    ResultBuffer<F32> logdet // (B1, B2, ...)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    // handle both unbatched and arbitrarily batched cases
+    size_t n_batches = 1;
+    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= cov_vals.dimensions()[i];
+    }
+
+    decltype(&refine_logdet<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, refine_logdet);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(), 
+        offsets.typed_data(),
+        cov_bins.typed_data(),
+        cov_vals.typed_data(),
+        logdet->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_cov,
+        n_batches
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_logdet_ffi, refine_logdet_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // cov_bins
+        .Arg<Buffer<F32>>() // cov_vals
+        .Ret<Buffer<F32>>() // logdet
 );
 
 // ==================== GRAPH CONSTRUCTION ====================

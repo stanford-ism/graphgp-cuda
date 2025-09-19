@@ -30,7 +30,7 @@ __forceinline__ __device__ size_t compute_parent(size_t current) {
     size_t n_above = (1 << level) - 1;
     size_t n_parent_level = 1 << (level - 1);
     size_t parent = (current < n_above + n_parent_level) ? (current - n_parent_level) : (current - 2 * n_parent_level);
-    return (current == 0) ? SIZE_MAX : parent;  // root has no parent
+    return (current == 0) ? SIZE_MAX : parent;  // use SIZE_MAX as sentinel, almost certainly safe
 }
 
 __forceinline__ __device__ size_t compute_segment_start(size_t tag, size_t n_above, size_t n_remaining) {

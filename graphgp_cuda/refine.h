@@ -13,8 +13,8 @@ __global__ void refine_kernel(
     const i_t* neighbors, // (N - n0, k)
     const f_t* cov_bins, // (R,)
     const f_t* cov_vals, // (B, R)
-    const f_t* xi, // (B, R)
-    f_t* values, // (B, R)
+    const f_t* xi, // (B, N - n0)
+    f_t* values, // (B, N)
     size_t n0,
     size_t k,
     size_t n_points,

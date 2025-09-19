@@ -18,6 +18,18 @@ refine_transpose_p = Primitive("graphgp_cuda_refine_transpose")
 refine_jvp_p = Primitive("graphgp_cuda_refine_jvp")
 refine_vjp_p = Primitive("graphgp_cuda_refine_vjp")
 
+refine_inv_p = Primitive("graphgp_cuda_refine_inv")
+
+refine_logdet_p = Primitive("graphgp_cuda_refine_logdet")
+
+def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
+    return refine_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+
+def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values):
+    return refine_inv_p.bind(points, neighbors, offsets, cov_bins, cov_vals, values)
+
+def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
+    return refine_logdet_p.bind(points, neighbors, offsets, cov_bins, cov_vals)
 
 def initialize():
     try:
@@ -32,6 +44,8 @@ def initialize():
         "refine_transpose",
         "refine_jvp",
         "refine_vjp",
+        "refine_inv",
+        "refine_logdet",
         "build_tree",
         "query_preceding_neighbors",
         "query_neighbors",
@@ -49,15 +63,17 @@ def initialize():
 
     def refine_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
         n = points.shape[0]
-        return ShapedArray(initial_values.shape[:-1] + (n,), jnp.float32)
+        batch_shape = initial_values.shape[:-1]
+        return ShapedArray(batch_shape + (n,), jnp.float32)
 
     def refine_transpose_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, values):
         n = points.shape[0]
         n0 = n - neighbors.shape[0]
+        batch_shape = values.shape[:-1]
         return (
-            ShapedArray(values.shape[:-1] + (n0,), jnp.float32),
-            ShapedArray(values.shape[:-1] + (n - n0,), jnp.float32),
-            ShapedArray(values.shape[:-1] + (n,), jnp.float32),
+            ShapedArray(batch_shape + (n0,), jnp.float32),
+            ShapedArray(batch_shape + (n - n0,), jnp.float32),
+            ShapedArray(batch_shape + (n,), jnp.float32),
         )
 
     def refine_jvp_abstract_eval(
@@ -73,9 +89,10 @@ def initialize():
         xi_tangent,
     ):
         n = points.shape[0]
+        batch_shape = initial_values.shape[:-1]
         return (
-            ShapedArray(initial_values.shape[:-1] + (n,), jnp.float32),
-            ShapedArray(initial_values.shape[:-1] + (n,), jnp.float32),
+            ShapedArray(batch_shape + (n,), jnp.float32),
+            ShapedArray(batch_shape + (n,), jnp.float32),
         )
 
     def refine_vjp_abstract_eval(
@@ -87,6 +104,19 @@ def initialize():
             ShapedArray(xi.shape, jnp.float32),
             ShapedArray(values.shape, jnp.float32),
         )
+
+    def refine_inv_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, values):
+        n = points.shape[0]
+        n0 = n - neighbors.shape[0]
+        batch_shape = values.shape[:-1]
+        return (
+            ShapedArray(batch_shape + (n0,), jnp.float32),  # initial_values
+            ShapedArray(batch_shape + (n - n0,), jnp.float32),  # xi
+        )
+
+    def refine_logdet_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals):
+        batch_shape = cov_vals.shape[:-1]
+        return ShapedArray(batch_shape, jnp.float32)  # logdet
 
     # Automatically set up all primitives
 
@@ -136,9 +166,23 @@ def initialize():
         platform="gpu",
     )
 
+    setup_ffi_primitive(
+        refine_inv_p,
+        "graphgp_cuda_refine_inv_ffi",
+        refine_inv_abstract_eval,
+        batch_args=(4, 5),
+        n_nonlinear=5,
+        platform="gpu",
+    )
 
-def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-    return refine_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+    setup_ffi_primitive(
+        refine_logdet_p,
+        "graphgp_cuda_refine_logdet_ffi",
+        refine_logdet_abstract_eval,
+        batch_args=(4,),
+        n_nonlinear=5,
+        platform="gpu",
+    )
 
 
 # ---------------- Graph construction (not differentiable) ----------------
