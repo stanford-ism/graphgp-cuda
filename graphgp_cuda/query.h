@@ -6,14 +6,15 @@
 #include "common.h"
 #include "tree.h"
 
+template <typename i_t, typename f_t>
 __forceinline__ __device__ void insert_neighbor(
-    int* neighbors,
-    float* distances,
-    int current_index,
-    float current_distance,
-    int k
+    i_t* neighbors,
+    f_t* distances,
+    size_t current_index,
+    f_t current_distance,
+    size_t k
 ) {
-    int i = k - 1;
+    size_t i = k - 1;
     // ensure well-defined ordering by putting earlier indices first
     while ((i > 0) && ((current_distance < distances[i-1]) || (current_distance == distances[i-1] && current_index < neighbors[i-1]))) {
         neighbors[i] = neighbors[i-1];
@@ -25,47 +26,47 @@ __forceinline__ __device__ void insert_neighbor(
 }
 
 
-template <int MAX_K, int N_DIM>
+template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
 __global__ void query_preceding_neighbors_kernel(
-    const float* points, // (N, d)
-    const int* split_dims, // (N,)
-    int* neighbors_out, // (Q, k)
-    int n0,
-    int k,
-    int n_threads
+    const f_t* points, // (N, d)
+    const i_t* split_dims, // (N,)
+    i_t* neighbors_out, // (Q, k)
+    size_t n0,
+    size_t k,
+    size_t n_threads
 ) {
-    size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_threads) return;
     size_t query_idx = idx + n0;
 
     // load query point
-    float query[N_DIM];
-    for (int i = 0; i < N_DIM; ++i) {
+    f_t query[N_DIM];
+    for (size_t i = 0; i < N_DIM; ++i) {
         query[i] = points[query_idx * N_DIM + i];
     }
 
     // initialize neighbor arrays
-    int neighbors[MAX_K];
-    float distances[MAX_K];
-    float max_distance = INFINITY;
-    for (int i = 0; i < k; ++i) {
+    i_t neighbors[MAX_K];
+    f_t distances[MAX_K];
+    f_t max_distance = INFINITY;
+    for (size_t i = 0; i < k; ++i) {
         distances[i] = max_distance;
         neighbors[i] = 0;
     }
 
     // set up traversal variables
-    int current = 0;
-    int root_parent = compute_parent(current);
-    int previous = root_parent;
-    int next = 0;
+    size_t current = 0;
+    size_t root_parent = compute_parent(current);
+    size_t previous = root_parent;
+    size_t next = 0;
 
     // traverse until we return to root
     while (current != root_parent) {
-        int parent = compute_parent(current);
+        size_t parent = compute_parent(current);
 
         // update neighbor array if necessary
         if (previous == parent) {
-            float current_distance = compute_square_distance(points + current * (size_t)N_DIM, query, N_DIM);
+            f_t current_distance = compute_square_distance(points + current * N_DIM, query, N_DIM);
             if (current_distance < max_distance) {
                 insert_neighbor(neighbors, distances, current, current_distance, k);
                 max_distance = distances[k - 1];
@@ -73,10 +74,10 @@ __global__ void query_preceding_neighbors_kernel(
         }
 
         // locate children and determine if far child in range
-        int split_dim = split_dims[current];
-        float split_distance = query[split_dim] - points[current * (size_t)N_DIM + split_dim];
-        int near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
-        int far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
+        i_t split_dim = split_dims[current];
+        f_t split_distance = query[split_dim] - points[current * N_DIM + split_dim];
+        size_t near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
+        size_t far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
         bool far_in_range = (far_child < query_idx) & (split_distance * split_distance <= max_distance);
 
         // determine next node to traverse
@@ -92,67 +93,58 @@ __global__ void query_preceding_neighbors_kernel(
         }
         previous = current;
         current = next;
-
-        // next =
-        //     (previous == parent)
-        //         ? ((near_child < query_idx) ? near_child
-        //                                     : (far_in_range ? far_child : parent))
-        //         : ((previous == near_child)
-        //             ? (far_in_range ? far_child : parent)
-        //             : parent);
     }
 
     // write neighbors to output
-    for (int i = 0; i < k; ++i) {
+    for (size_t i = 0; i < k; ++i) {
         neighbors_out[idx * k + i] = neighbors[i];
     }
 }
 
-
-template <int MAX_K, int N_DIM>
+template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
 __global__ void query_neighbors_kernel(
-    const float* points, // (N, d)
-    const int* split_dims, // (N,)
-    const int* query_indices, // (Q,)
-    const int* max_indices, // (Q,)
-    int* neighbors_out, // (Q, k)
-    int k,
-    int n_points, 
-    int n_queries
+    const f_t* points, // (N, d)
+    const i_t* split_dims, // (N,)
+    const i_t* query_indices, // (Q,)
+    const i_t* max_indices, // (Q,)
+    i_t* neighbors_out, // (Q, k)
+    size_t k,
+    size_t n_points, 
+    size_t n_queries
 ) {
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n_queries) return;
     size_t query_index = query_indices[tid];
-    int max_index = max_indices[tid];
+    i_t max_index = max_indices[tid];
 
     // load query point
-    float query[N_DIM];
-    for (int i = 0; i < N_DIM; ++i) {
+    f_t query[N_DIM];
+    for (size_t i = 0; i < N_DIM; ++i) {
         query[i] = points[query_index * N_DIM + i];
     }
 
     // initialize neighbor arrays
-    int neighbors[MAX_K];
-    float distances[MAX_K];
-    float max_distance = INFINITY;
-    for (int i = 0; i < k; ++i) {
+    i_t neighbors[MAX_K];
+    f_t distances[MAX_K];
+    f_t max_distance = INFINITY;
+    for (size_t i = 0; i < k; ++i) {
         distances[i] = max_distance;
         neighbors[i] = 0;
     }
 
     // set up traversal variables
-    int current = 0;
-    int root_parent = compute_parent(current);
-    int previous = root_parent;
-    int next = 0;
+    size_t current = 0;
+    size_t root_parent = compute_parent(current);
+    size_t previous = root_parent;
+    size_t next = 0;
 
     // traverse until we return to root
     while (current != root_parent) {
-        int parent = compute_parent(current);
+        size_t parent = compute_parent(current);
 
         // update neighbor array if necessary
         if (previous == parent) {
-            float current_distance = compute_square_distance(points + current * (size_t)N_DIM, query, N_DIM);
+            f_t current_distance = compute_square_distance(points + current * N_DIM, query, N_DIM);
             if (current_distance < max_distance) {
                 insert_neighbor(neighbors, distances, current, current_distance, k);
                 max_distance = distances[k - 1];
@@ -160,10 +152,10 @@ __global__ void query_neighbors_kernel(
         }
 
         // locate children and determine if far child in range
-        int split_dim = split_dims[current];
-        float split_distance = query[split_dim] - points[current * (size_t)N_DIM + split_dim];
-        int near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
-        int far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
+        i_t split_dim = split_dims[current];
+        f_t split_distance = query[split_dim] - points[current * N_DIM + split_dim];
+        size_t near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
+        size_t far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
         bool far_in_range = (far_child < max_index) & (split_distance * split_distance <= max_distance);
 
         // determine next node to traverse
@@ -182,7 +174,7 @@ __global__ void query_neighbors_kernel(
     }
 
     // write neighbors to output
-    for (int i = 0; i < k; ++i) {
+    for (size_t i = 0; i < k; ++i) {
         neighbors_out[tid * k + i] = neighbors[i];
     }
 }

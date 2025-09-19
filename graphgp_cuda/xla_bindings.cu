@@ -11,7 +11,6 @@
 #include "query.h"
 #include "depth.h"
 #include "refine.h"
-#include "refine_cov_jvp.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -75,12 +74,12 @@ Error refine_ffi_impl(
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values // (B1, B2, ..., N)
 ) {
-    int n_points = points.dimensions()[0];
-    int n_dim = points.dimensions()[1];
-    int n_levels = offsets.dimensions()[0];
-    int n_cov = cov_bins.dimensions()[0];
-    int n0 = n_points - neighbors.dimensions()[0];
-    int k = neighbors.dimensions()[1];
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
@@ -89,7 +88,7 @@ Error refine_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine<1,1>) dispatch = nullptr;
+    decltype(&refine<1,1,int,float>) dispatch = nullptr;
     DISPATCH_K_DIM(dispatch, refine);
     dispatch(
         stream,
@@ -136,16 +135,16 @@ Error refine_transpose_ffi_impl(
     Buffer<F32> cov_bins, // (R,)
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
     Buffer<F32> values, // (B1, B2, ..., N)
-    ResultBuffer<F32> values_buffer, // (B1, B2, ..., N) to use as a temporary buffer
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
-    ResultBuffer<F32> xi // (B1, B2, ..., N - n0)
+    ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
+    ResultBuffer<F32> values_buffer // (B1, B2, ..., N) to use as a temporary buffer
 ) {
-    int n_points = points.dimensions()[0];
-    int n_dim = points.dimensions()[1];
-    int n_levels = offsets.dimensions()[0];
-    int n_cov = cov_bins.dimensions()[0];
-    int n0 = n_points - neighbors.dimensions()[0];
-    int k = neighbors.dimensions()[1];
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
@@ -154,7 +153,7 @@ Error refine_transpose_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_transpose<1,1>) dispatch = nullptr;
+    decltype(&refine_transpose<1,1,int,float>) dispatch = nullptr;
     DISPATCH_K_DIM(dispatch, refine_transpose);
     dispatch(
         stream,
@@ -188,9 +187,9 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // cov_bins
         .Arg<Buffer<F32>>() // cov_vals
         .Arg<Buffer<F32>>() // values
-        .Ret<Buffer<F32>>() // values_buffer
         .Ret<Buffer<F32>>() // initial_values
         .Ret<Buffer<F32>>() // xi
+        .Ret<Buffer<F32>>() // values_buffer
 );
 
 // ---------------------------------------------------------------------------------
@@ -210,12 +209,12 @@ Error refine_jvp_ffi_impl(
     ResultBuffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> values_tangent
 ) {
-    int n_points = points.dimensions()[0];
-    int n_dim = points.dimensions()[1];
-    int n_levels = offsets.dimensions()[0];
-    int n_cov = cov_bins.dimensions()[0];
-    int n0 = n_points - neighbors.dimensions()[0];
-    int k = neighbors.dimensions()[1];
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
@@ -224,7 +223,7 @@ Error refine_jvp_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_jvp<1,1>) dispatch = nullptr;
+    decltype(&refine_jvp<1,1,int,float>) dispatch = nullptr;
     DISPATCH_K_DIM(dispatch, refine_jvp);
     dispatch(
         stream,
@@ -262,8 +261,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // cov_vals
         .Arg<Buffer<F32>>() // initial_values
         .Arg<Buffer<F32>>() // xi
-        .Arg<Buffer<F32>>() // values
         .Arg<Buffer<F32>>() // cov_vals_tangent
+        .Arg<Buffer<F32>>() // initial_values_tangent
+        .Arg<Buffer<F32>>() // xi_tangent
+        .Ret<Buffer<F32>>() // values
         .Ret<Buffer<F32>>() // values_tangent
 );
 
@@ -280,17 +281,17 @@ Error refine_vjp_ffi_impl(
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
     Buffer<F32> values, // (B1, B2, ..., N)
     Buffer<F32> values_tangent, // (B1, B2, ..., N)
-    ResultBuffer<F32> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
     ResultBuffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
     ResultBuffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
-    ResultBuffer<F32> xi_tangent // (B1, B2, ..., N - n0)
+    ResultBuffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
+    ResultBuffer<F32> values_tangent_buffer // (B1, B2, ..., N) to use as a temporary buffer
 ) {
-    int n_points = points.dimensions()[0];
-    int n_dim = points.dimensions()[1];
-    int n_levels = offsets.dimensions()[0];
-    int n_cov = cov_bins.dimensions()[0];
-    int n0 = n_points - neighbors.dimensions()[0];
-    int k = neighbors.dimensions()[1];
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
@@ -299,7 +300,7 @@ Error refine_vjp_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_vjp<1,1>) dispatch = nullptr;
+    decltype(&refine_vjp<1,1,int,float>) dispatch = nullptr;
     DISPATCH_K_DIM(dispatch, refine_vjp);
     dispatch(
         stream,
@@ -328,7 +329,7 @@ Error refine_vjp_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_vjp_ffi_impl, refine_vjp_ffi_impl,
+    refine_vjp_ffi, refine_vjp_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -340,10 +341,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // xi
         .Arg<Buffer<F32>>() // values
         .Arg<Buffer<F32>>() // values_tangent
-        .Ret<Buffer<F32>>() // values_tangent_buffer
         .Ret<Buffer<F32>>() // cov_vals_tangent
         .Ret<Buffer<F32>>() // initial_values_tangent
         .Ret<Buffer<F32>>() // xi_tangent
+        .Ret<Buffer<F32>>() // values_tangent_buffer
 );
 
 // ==================== GRAPH CONSTRUCTION ====================
@@ -358,7 +359,7 @@ Error build_tree_ffi_impl(
     ResultBuffer<F32> ranges // (N,)
 ) {
     size_t n_points = points_in.dimensions()[0];
-    int n_dim = points_in.dimensions()[1];
+    size_t n_dim = points_in.dimensions()[1];
     cudaMemcpyAsync(points->typed_data(), points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     build_tree(
         stream,
@@ -396,24 +397,22 @@ Error query_neighbors_ffi_impl(
     Buffer<S32> max_indices, // (Q,)
     ResultBuffer<S32> neighbors // (Q, k)
 ) {
-    int n_points = points.dimensions()[0];
-    int n_queries = query_indices.dimensions()[0];
-    int n_dim = points.dimensions()[1];
-    int k = neighbors->dimensions()[1];
+    size_t n_points = points.dimensions()[0];
+    size_t n_queries = query_indices.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t k = neighbors->dimensions()[1];
 
-    decltype(&query_neighbors_kernel<1,1>) dispatch = nullptr;
+    decltype(&query_neighbors_kernel<1,1,int,float>) dispatch = nullptr;
     DISPATCH_K_DIM(dispatch, query_neighbors_kernel);
-    CUDA_LAUNCH(
-        dispatch,
-        n_queries,
-        stream,
+    dispatch<<<cld(n_queries, 256), 256, 0, stream>>>(
         points.typed_data(), 
         split_dims.typed_data(),
         query_indices.typed_data(),
         max_indices.typed_data(),
         neighbors->typed_data(),
         k,
-        n_points
+        n_points,
+        n_queries
     );
 
     return Error::Success();
@@ -438,14 +437,21 @@ Error query_preceding_neighbors_ffi_impl(
     Buffer<S32> split_dims, // (N,) split dimensions
     ResultBuffer<S32> neighbors // (N - n0, k)
 ) {
-    int n_points = points.dimensions()[0];
-    int n_dim = points.dimensions()[1];
-    int n0 = n_points - neighbors->dimensions()[0];
-    int k = neighbors->dimensions()[1];
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n0 = n_points - neighbors->dimensions()[0];
+    size_t k = neighbors->dimensions()[1];
 
-    decltype(&query_preceding_neighbors_kernel<1,1>) dispatch = nullptr;
+    decltype(&query_preceding_neighbors_kernel<1,1,int,float>) dispatch = nullptr;
     DISPATCH_K_DIM(dispatch, query_preceding_neighbors_kernel);
-    CUDA_LAUNCH(dispatch, n_points - n0, stream, points.typed_data(), split_dims.typed_data(), neighbors->typed_data(), n0, k);
+    dispatch<<<cld(n_points - n0, 256), 256, 0, stream>>>(
+        points.typed_data(), 
+        split_dims.typed_data(),
+        neighbors->typed_data(),
+        n0,
+        k,
+        n_points - n0
+    );
 
     return Error::Success();
 }
@@ -467,9 +473,9 @@ Error compute_depths_parallel_ffi_impl(
     ResultBuffer<S32> depths, // (N,)
     ResultBuffer<S32> temp // (N,)
 ) {
-    int n_points = depths->dimensions()[0];
-    int n0 = n_points - neighbors.dimensions()[0];
-    int k = neighbors.dimensions()[1];
+    size_t n_points = depths->dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
     compute_depths_parallel(stream, neighbors.typed_data(), depths->typed_data(), temp->typed_data(), n0, k, n_points);
     return Error::Success();
 }
@@ -481,28 +487,6 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S32>>() // neighbors
         .Ret<Buffer<S32>>() // depths
         .Ret<Buffer<S32>>() // temp
-);
-
-// ---------------------------------------------------------------------------------
-
-Error compute_depths_serial_ffi_impl(
-    cudaStream_t stream,
-    Buffer<S32> neighbors, // (N - n0, k)
-    ResultBuffer<S32> depths // (N,)
-) {
-    int n_points = depths->dimensions()[0];
-    int n0 = n_points - neighbors.dimensions()[0];
-    int k = neighbors.dimensions()[1];
-    CUDA_LAUNCH(compute_depths_serial, 1, stream, neighbors.typed_data(), depths->typed_data(), n_points, n0, k);
-    return Error::Success();
-}
-
-XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    compute_depths_serial_ffi, compute_depths_serial_ffi_impl,
-    Ffi::Bind()
-        .Ctx<PlatformStream<cudaStream_t>>()
-        .Arg<Buffer<S32>>() // neighbors
-        .Ret<Buffer<S32>>() // depths
 );
 
 // ---------------------------------------------------------------------------------
@@ -520,9 +504,9 @@ Error order_by_depth_ffi_impl(
     ResultBuffer<S32> temp // (2*N,)
 ) {
     size_t n_points = points_in.dimensions()[0];
-    int n_dim = points_in.dimensions()[1];
-    int n0 = n_points - neighbors_in.dimensions()[0];
-    int k = neighbors_in.dimensions()[1];
+    size_t n_dim = points_in.dimensions()[1];
+    size_t n0 = n_points - neighbors_in.dimensions()[0];
+    size_t k = neighbors_in.dimensions()[1];
 
     cudaMemcpyAsync(points_out->typed_data(), points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     cudaMemcpyAsync(indices_out->typed_data(), indices_in.typed_data(), n_points * sizeof(int), cudaMemcpyDeviceToDevice, stream);
@@ -537,6 +521,7 @@ Error order_by_depth_ffi_impl(
         depths_out->typed_data(),
         temp->typed_data(),
         temp->typed_data() + n_points,
+        reinterpret_cast<float*>(temp->typed_data() + n_points),
         n0,
         k,
         n_points,
@@ -568,19 +553,20 @@ Error build_graph_ffi_impl(
     ResultBuffer<F32> points_out, // (N, d)
     ResultBuffer<S32> indices_out, // (N,)
     ResultBuffer<S32> neighbors_out, // (N - n0, k)
-    ResultBuffer<S32> depths_out, // (N, )
+    ResultBuffer<S32> depths_out, // (N,)
     ResultBuffer<S32> temp_out // (2*N,)
 ) {
     size_t n_points = points_in.dimensions()[0];
-    int n_dim = points_in.dimensions()[1];
-    int n0 = n_points - neighbors_out->dimensions()[0];
-    int k = neighbors_out->dimensions()[1];
+    size_t n_dim = points_in.dimensions()[1];
+    size_t n0 = n_points - neighbors_out->dimensions()[0];
+    size_t k = neighbors_out->dimensions()[1];
 
     float* points = points_out->typed_data();
     int* indices = indices_out->typed_data();
     int* neighbors = neighbors_out->typed_data();
     int* depths = depths_out->typed_data();
-    int* temp = temp_out->typed_data();
+    int* temp_int = temp_out->typed_data();
+    float* temp_float = reinterpret_cast<float*>(temp_out->typed_data());
 
     // Build tree
     cudaMemcpyAsync(points, points_in.typed_data(), n_points * n_dim * sizeof(float), cudaMemcpyDeviceToDevice, stream);
@@ -590,20 +576,20 @@ Error build_graph_ffi_impl(
         points,
         depths, // use depths as split_dims
         indices,
-        temp, // use temp for tags
-        reinterpret_cast<float*>(temp + n_points), // use temp for ranges
+        temp_int, // use temp for tags
+        temp_float, // use temp for ranges
         n_dim,
         n_points
     );
 
     // Query preceding neighbors
-    decltype(&query_preceding_neighbors_kernel<1,1>) query_dispatch = nullptr;
+    decltype(&query_preceding_neighbors_kernel<1,1,int,float>) query_dispatch = nullptr;
     DISPATCH_K_DIM(query_dispatch, query_preceding_neighbors_kernel);
-    CUDA_LAUNCH(query_dispatch, n_points - n0, stream, points, depths, neighbors, n0, k);
+    query_dispatch<<<cld(n_points - n0, 256), 256, 0, stream>>>(points, depths, neighbors, n0, k, n_points - n0);
 
     // Order by depth
-    compute_depths_parallel(stream, neighbors, depths, temp, n0, k, n_points);
-    order_by_depth(stream, points, indices, neighbors, depths, temp, temp + n_points, n0, k, n_points, n_dim);
+    compute_depths_parallel(stream, neighbors, depths, temp_int, n0, k, n_points);
+    order_by_depth(stream, points, indices, neighbors, depths, temp_int, temp_int + n_points, temp_float + n_points, n0, k, n_points, n_dim);
 
     return Error::Success();
 }
@@ -627,7 +613,7 @@ Error sort_ffi_impl(
     Buffer<F32> keys_in,
     ResultBuffer<F32> keys_out
 ) {
-    int n = keys_in.dimensions()[0];
+    size_t n = keys_in.dimensions()[0];
     cudaMemcpyAsync(keys_out->typed_data(), keys_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     sort(keys_out->typed_data(), n, stream);
     return Error::Success();
@@ -650,7 +636,7 @@ Error sort_three_ffi_impl(
     ResultBuffer<F32> keys2_out,
     ResultBuffer<F32> keys3_out
 ) {
-    int n = keys1_in.dimensions()[0];
+    size_t n = keys1_in.dimensions()[0];
     cudaMemcpyAsync(keys1_out->typed_data(), keys1_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     cudaMemcpyAsync(keys2_out->typed_data(), keys2_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     cudaMemcpyAsync(keys3_out->typed_data(), keys3_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
@@ -681,7 +667,7 @@ Error sort_four_ffi_impl(
     ResultBuffer<F32> keys3_out,
     ResultBuffer<F32> keys4_out
 ) {
-    int n = keys1_in.dimensions()[0];
+    size_t n = keys1_in.dimensions()[0];
     cudaMemcpyAsync(keys1_out->typed_data(), keys1_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     cudaMemcpyAsync(keys2_out->typed_data(), keys2_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     cudaMemcpyAsync(keys3_out->typed_data(), keys3_in.typed_data(), n * sizeof(float), cudaMemcpyDeviceToDevice, stream);

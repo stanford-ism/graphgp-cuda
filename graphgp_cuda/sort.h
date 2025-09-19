@@ -38,10 +38,8 @@ template<>
 __forceinline__ __device__ double max_value() { return INFINITY; };
 
 
-// ================= REFERENCE NON-POWER-OF-TWO BITONIC SORT ===================
-
 template <typename T>
-__forceinline__ __device__ void shared_swap(T* keys, int a, int b) {
+__forceinline__ __device__ void shared_swap(T* keys, size_t a, size_t b) {
     T ka = keys[a];
     T kb = keys[b];
     bool swap = (ka > kb);
@@ -50,7 +48,7 @@ __forceinline__ __device__ void shared_swap(T* keys, int a, int b) {
 }
 
 template <typename T1, typename T2>
-__forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, int a, int b) {
+__forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, size_t a, size_t b) {
     T1 k1a = keys1[a];
     T1 k1b = keys1[b];
     T2 k2a = keys2[a];
@@ -63,7 +61,7 @@ __forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, int a, int b) 
 }
 
 template <typename T1, typename T2, typename T3>
-__forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, T3* keys3, int a, int b) {
+__forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, T3* keys3, size_t a, size_t b) {
     T1 k1a = keys1[a];
     T1 k1b = keys1[b];
     T2 k2a = keys2[a];
@@ -80,7 +78,7 @@ __forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, T3* keys3, int
 }
 
 template <typename T1, typename T2, typename T3, typename T4>
-__forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, T3* keys3, T4* keys4, int a, int b) {
+__forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, T3* keys3, T4* keys4, size_t a, size_t b) {
     T1 k1a = keys1[a];
     T1 k1b = keys1[b];
     T2 k2a = keys2[a];
@@ -102,7 +100,7 @@ __forceinline__ __device__ void shared_swap(T1* keys1, T2* keys2, T3* keys3, T4*
 
 
 template <typename T>
-__forceinline__ __device__ void global_swap(T* keys, int a, int b) {
+__forceinline__ __device__ void global_swap(T* keys, size_t a, size_t b) {
     T k1 = keys[a];
     T k2 = keys[b];
     if (k1 > k2) {
@@ -112,7 +110,7 @@ __forceinline__ __device__ void global_swap(T* keys, int a, int b) {
 }
 
 template <typename T1, typename T2>
-__forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, int a, int b) {
+__forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, size_t a, size_t b) {
     T1 k1a = keys1[a];
     T1 k1b = keys1[b];
     T2 k2a = keys2[a];
@@ -126,7 +124,7 @@ __forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, int a, int b) 
 }
 
 template <typename T1, typename T2, typename T3>
-__forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, T3* keys3, int a, int b) {
+__forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, T3* keys3, size_t a, size_t b) {
     T1 k1a = keys1[a];
     T1 k1b = keys1[b];
     T2 k2a = keys2[a];
@@ -144,7 +142,7 @@ __forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, T3* keys3, int
 }
 
 template <typename T1, typename T2, typename T3, typename T4>
-__forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, T3* keys3, T4* keys4, int a, int b) {
+__forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, T3* keys3, T4* keys4, size_t a, size_t b) {
     T1 k1a = keys1[a];
     T1 k1b = keys1[b];
     T2 k2a = keys2[a];
@@ -166,90 +164,90 @@ __forceinline__ __device__ void global_swap(T1* keys1, T2* keys2, T3* keys3, T4*
 }
 
 template <typename T>
-__global__ void global_sort_up(T* keys, int u, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_up(T* keys, size_t u, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -u;
-    int l = tid + s;
-    int r = l ^ (2 * u - 1);
+    size_t s = tid & -u;
+    size_t l = tid + s;
+    size_t r = l ^ (2 * u - 1);
     if (r < n) global_swap(keys, l, r);
 }
 
 template <typename T1, typename T2>
-__global__ void global_sort_up(T1* keys1, T2* keys2, int u, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_up(T1* keys1, T2* keys2, size_t u, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -u;
-    int l = tid + s;
-    int r = l ^ (2 * u - 1);
+    size_t s = tid & -u;
+    size_t l = tid + s;
+    size_t r = l ^ (2 * u - 1);
     if (r < n) global_swap(keys1, keys2, l, r);
 }
 
 template <typename T1, typename T2, typename T3>
-__global__ void global_sort_up(T1* keys1, T2* keys2, T3* keys3, int u, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_up(T1* keys1, T2* keys2, T3* keys3, size_t u, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -u;
-    int l = tid + s;
-    int r = l ^ (2 * u - 1);
+    size_t s = tid & -u;
+    size_t l = tid + s;
+    size_t r = l ^ (2 * u - 1);
     if (r < n) global_swap(keys1, keys2, keys3, l, r);
 }
 
 template <typename T1, typename T2, typename T3, typename T4>
-__global__ void global_sort_up(T1* keys1, T2* keys2, T3* keys3, T4* keys4, int u, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_up(T1* keys1, T2* keys2, T3* keys3, T4* keys4, size_t u, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -u;
-    int l = tid + s;
-    int r = l ^ (2 * u - 1);
+    size_t s = tid & -u;
+    size_t l = tid + s;
+    size_t r = l ^ (2 * u - 1);
     if (r < n) global_swap(keys1, keys2, keys3, keys4, l, r);
 }
 
 template <typename T>
-__global__ void global_sort_down(T* keys, int d, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_down(T* keys, size_t d, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -d;
-    int l = tid + s;
-    int r = l + d;
+    size_t s = tid & -d;
+    size_t l = tid + s;
+    size_t r = l + d;
     if (r < n) global_swap(keys, l, r);
 }
 
 template <typename T1, typename T2>
-__global__ void global_sort_down(T1* keys1, T2* keys2, int d, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_down(T1* keys1, T2* keys2, size_t d, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -d;
-    int l = tid + s;
-    int r = l + d;
+    size_t s = tid & -d;
+    size_t l = tid + s;
+    size_t r = l + d;
     if (r < n) global_swap(keys1, keys2, l, r);
 }
 
 template <typename T1, typename T2, typename T3>
-__global__ void global_sort_down(T1* keys1, T2* keys2, T3* keys3, int d, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_down(T1* keys1, T2* keys2, T3* keys3, size_t d, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -d;
-    int l = tid + s;
-    int r = l + d;
+    size_t s = tid & -d;
+    size_t l = tid + s;
+    size_t r = l + d;
     if (r < n) global_swap(keys1, keys2, keys3, l, r);
 }
 
 template <typename T1, typename T2, typename T3, typename T4>
-__global__ void global_sort_down(T1* keys1, T2* keys2, T3* keys3, T4* keys4, int d, int n) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void global_sort_down(T1* keys1, T2* keys2, T3* keys3, T4* keys4, size_t d, size_t n) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
-    int s = tid & -d;
-    int l = tid + s;
-    int r = l + d;
+    size_t s = tid & -d;
+    size_t l = tid + s;
+    size_t r = l + d;
     if (r < n) global_swap(keys1, keys2, keys3, keys4, l, r);
 }
 
-template <typename T, int BLOCK_THREADS, bool UP>
-__global__ void block_sort(T* g_keys, int n) {
-    int i = threadIdx.x;
-    const int n_shared = 2 * BLOCK_THREADS; // must be power of two
-    int idx = i + blockIdx.x * n_shared;
+template <typename T, size_t BLOCK_THREADS, bool UP>
+__global__ void block_sort(T* g_keys, size_t n) {
+    size_t i = threadIdx.x;
+    const size_t n_shared = 2 * BLOCK_THREADS; // must be power of two
+    size_t idx = (size_t)blockIdx.x * n_shared + i;
 
     // build power of two array of keys
     __shared__ T keys[n_shared];
@@ -268,20 +266,20 @@ __global__ void block_sort(T* g_keys, int n) {
     __syncthreads();
 
     // bitonic sorting network, stride at most BLOCK_THREADS to cover n_shared values
-    int s, l, r;
+    size_t s, l, r;
     if constexpr (UP) {
-        for (int u = 1; u <= BLOCK_THREADS; u += u) {
+        for (size_t u = 1; u <= BLOCK_THREADS; u += u) {
             s = i & -u; l = i + s; r = l ^ (2 * u - 1);
             shared_swap(keys, l, r);
             __syncthreads();
-            for (int d = u/2; d >= 1; d /= 2) {
+            for (size_t d = u/2; d >= 1; d /= 2) {
                 s = i & -d; l = i + s; r = l + d;
                 shared_swap(keys, l, r);
                 __syncthreads();
             }
         }
     } else {
-        for (int d = BLOCK_THREADS; d >= 1; d /= 2) {
+        for (size_t d = BLOCK_THREADS; d >= 1; d /= 2) {
             s = i & -d; l = i + s; r = l + d;
             shared_swap(keys, l, r);
             __syncthreads();
@@ -298,11 +296,11 @@ __global__ void block_sort(T* g_keys, int n) {
 }
 
 
-template <typename T1, typename T2, int BLOCK_THREADS, bool UP>
-__global__ void block_sort(T1* g_keys1, T2* g_keys2, int n) {
-    int i = threadIdx.x;
-    const int n_shared = 2 * BLOCK_THREADS; // must be power of two
-    int idx = i + blockIdx.x * n_shared;
+template <typename T1, typename T2, size_t BLOCK_THREADS, bool UP>
+__global__ void block_sort(T1* g_keys1, T2* g_keys2, size_t n) {
+    size_t i = threadIdx.x;
+    const size_t n_shared = 2 * BLOCK_THREADS; // must be power of two
+    size_t idx = (size_t)blockIdx.x * n_shared + i;
 
     // build power of two array of keys
     __shared__ T1 keys1[n_shared];
@@ -326,20 +324,20 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, int n) {
     __syncthreads();
 
     // bitonic sorting network, stride at most BLOCK_THREADS to cover n_shared values
-    int s, l, r;
+    size_t s, l, r;
     if constexpr (UP) {
-        for (int u = 1; u <= BLOCK_THREADS; u += u) {
+        for (size_t u = 1; u <= BLOCK_THREADS; u += u) {
             s = i & -u; l = i + s; r = l ^ (2 * u - 1);
             shared_swap(keys1, keys2, l, r);
             __syncthreads();
-            for (int d = u/2; d >= 1; d /= 2) {
+            for (size_t d = u/2; d >= 1; d /= 2) {
                 s = i & -d; l = i + s; r = l + d;
                 shared_swap(keys1, keys2, l, r);
                 __syncthreads();
             }
         }
     } else {
-        for (int d = BLOCK_THREADS; d >= 1; d /= 2) {
+        for (size_t d = BLOCK_THREADS; d >= 1; d /= 2) {
             s = i & -d; l = i + s; r = l + d;
             shared_swap(keys1, keys2, l, r);
             __syncthreads();
@@ -357,11 +355,11 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, int n) {
     }
 }
 
-template <typename T1, typename T2, typename T3, int BLOCK_THREADS, bool UP>
-__global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, int n) {
-    int i = threadIdx.x;
-    const int n_shared = 2 * BLOCK_THREADS; // must be power of two
-    int idx = i + blockIdx.x * n_shared;
+template <typename T1, typename T2, typename T3, size_t BLOCK_THREADS, bool UP>
+__global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, size_t n) {
+    size_t i = threadIdx.x;
+    const size_t n_shared = 2 * BLOCK_THREADS; // must be power of two
+    size_t idx = (size_t)blockIdx.x * n_shared + i;
 
     // build power of two array of keys
     __shared__ T1 keys1[n_shared];
@@ -390,20 +388,20 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, int n) {
     __syncthreads();
 
     // bitonic sorting network, stride at most BLOCK_THREADS to cover n_shared values
-    int s, l, r;
+    size_t s, l, r;
     if constexpr (UP) {
-        for (int u = 1; u <= BLOCK_THREADS; u += u) {
+        for (size_t u = 1; u <= BLOCK_THREADS; u += u) {
             s = i & -u; l = i + s; r = l ^ (2 * u - 1);
             shared_swap(keys1, keys2, keys3, l, r);
             __syncthreads();
-            for (int d = u/2; d >= 1; d /= 2) {
+            for (size_t d = u/2; d >= 1; d /= 2) {
                 s = i & -d; l = i + s; r = l + d;
                 shared_swap(keys1, keys2, keys3, l, r);
                 __syncthreads();
             }
         }
     } else {
-        for (int d = BLOCK_THREADS; d >= 1; d /= 2) {
+        for (size_t d = BLOCK_THREADS; d >= 1; d /= 2) {
             s = i & -d; l = i + s; r = l + d;
             shared_swap(keys1, keys2, keys3, l, r);
             __syncthreads();
@@ -423,11 +421,11 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, int n) {
     }
 }
 
-template <typename T1, typename T2, typename T3, typename T4, int BLOCK_THREADS, bool UP>
-__global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, T4* g_keys4, int n) {
-    int i = threadIdx.x;
-    const int n_shared = 2 * BLOCK_THREADS; // must be power of two
-    int idx = i + blockIdx.x * n_shared;
+template <typename T1, typename T2, typename T3, typename T4, size_t BLOCK_THREADS, bool UP>
+__global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, T4* g_keys4, size_t n) {
+    size_t i = threadIdx.x;
+    const size_t n_shared = 2 * BLOCK_THREADS; // must be power of two
+    size_t idx = (size_t)blockIdx.x * n_shared + i;
 
     // build power of two array of keys
     __shared__ T1 keys1[n_shared];
@@ -461,20 +459,20 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, T4* g_keys4, i
     __syncthreads();
 
     // bitonic sorting network, stride at most BLOCK_THREADS to cover n_shared values
-    int s, l, r;
+    size_t s, l, r;
     if constexpr (UP) {
-        for (int u = 1; u <= BLOCK_THREADS; u += u) {
+        for (size_t u = 1; u <= BLOCK_THREADS; u += u) {
             s = i & -u; l = i + s; r = l ^ (2 * u - 1);
             shared_swap(keys1, keys2, keys3, keys4, l, r);
             __syncthreads();
-            for (int d = u/2; d >= 1; d /= 2) {
+            for (size_t d = u/2; d >= 1; d /= 2) {
                 s = i & -d; l = i + s; r = l + d;
                 shared_swap(keys1, keys2, keys3, keys4, l, r);
                 __syncthreads();
             }
         }
     } else {
-        for (int d = BLOCK_THREADS; d >= 1; d /= 2) {
+        for (size_t d = BLOCK_THREADS; d >= 1; d /= 2) {
             s = i & -d; l = i + s; r = l + d;
             shared_swap(keys1, keys2, keys3, keys4, l, r);
             __syncthreads();
@@ -497,72 +495,72 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, T4* g_keys4, i
 }
 
 template <typename T>
-__host__ void sort(T* keys, int n, cudaStream_t stream) {
+__host__ void sort(T* keys, size_t n, cudaStream_t stream) {
 
-    const int block_threads = 1024; // must be power of two
-    const int n_shared = 2 * block_threads;
-    int n_blocks = (n + n_shared - 1) / n_shared;
+    const size_t block_threads = 1024; // must be power of two
+    const size_t n_shared = 2 * block_threads;
+    size_t n_blocks = (n + n_shared - 1) / n_shared;
 
     // block sort handles maximum stride of block_threads, or n_shared / 2
     block_sort<T, block_threads, true><<<n_blocks, block_threads, 0, stream>>>(keys, n);
-    for (int u = n_shared; u < n; u += u) {
-        CUDA_LAUNCH(global_sort_up, n, stream, keys, u);
-        for (int d = u/2; d >= n_shared; d /= 2) {
-            CUDA_LAUNCH(global_sort_down, n, stream, keys, d);
+    for (size_t u = n_shared; u < n; u += u) {
+        global_sort_up<<<cld(n, 256), 256, 0, stream>>>(keys, u, n);
+        for (size_t d = u/2; d >= n_shared; d /= 2) {
+            global_sort_down<<<cld(n, 256), 256, 0, stream>>>(keys, d, n);
         }
         block_sort<T, block_threads, false><<<n_blocks, block_threads, 0, stream>>>(keys, n);
     }
 }
 
 template <typename T1, typename T2>
-__host__ void sort(T1* keys1, T2* keys2, int n, cudaStream_t stream) {
+__host__ void sort(T1* keys1, T2* keys2, size_t n, cudaStream_t stream) {
 
-    const int block_threads = 1024; // must be power of two
-    const int n_shared = 2 * block_threads;
-    int n_blocks = (n + n_shared - 1) / n_shared;
+    const size_t block_threads = 1024; // must be power of two
+    const size_t n_shared = 2 * block_threads;
+    size_t n_blocks = (n + n_shared - 1) / n_shared;
 
     // block sort handles maximum stride of block_threads, or n_shared / 2
     block_sort<T1, T2, block_threads, true><<<n_blocks, block_threads, 0, stream>>>(keys1, keys2, n);
-    for (int u = n_shared; u < n; u += u) {
-        CUDA_LAUNCH(global_sort_up, n, stream, keys1, keys2, u);
-        for (int d = u/2; d >= n_shared; d /= 2) {
-            CUDA_LAUNCH(global_sort_down, n, stream, keys1, keys2, d);
+    for (size_t u = n_shared; u < n; u += u) {
+        global_sort_up<<<cld(n, 256), 256, 0, stream>>>(keys1, keys2, u, n);
+        for (size_t d = u/2; d >= n_shared; d /= 2) {
+            global_sort_down<<<cld(n, 256), 256, 0, stream>>>(keys1, keys2, d, n);
         }
         block_sort<T1, T2, block_threads, false><<<n_blocks, block_threads, 0, stream>>>(keys1, keys2, n);
     }
 }
 
 template <typename T1, typename T2, typename T3>
-__host__ void sort(T1* keys1, T2* keys2, T3* keys3, int n, cudaStream_t stream) {
+__host__ void sort(T1* keys1, T2* keys2, T3* keys3, size_t n, cudaStream_t stream) {
 
-    const int block_threads = 1024; // must be power of two
-    const int n_shared = 2 * block_threads;
-    int n_blocks = (n + n_shared - 1) / n_shared;
+    const size_t block_threads = 1024; // must be power of two
+    const size_t n_shared = 2 * block_threads;
+    size_t n_blocks = (n + n_shared - 1) / n_shared;
 
     // block sort handles maximum stride of block_threads, or n_shared / 2
     block_sort<T1, T2, T3, block_threads, true><<<n_blocks, block_threads, 0, stream>>>(keys1, keys2, keys3, n);
-    for (int u = n_shared; u < n; u += u) {
-        CUDA_LAUNCH(global_sort_up, n, stream, keys1, keys2, keys3, u);
-        for (int d = u/2; d >= n_shared; d /= 2) {
-            CUDA_LAUNCH(global_sort_down, n, stream, keys1, keys2, keys3, d);
+    for (size_t u = n_shared; u < n; u += u) {
+        global_sort_up<<<cld(n, 256), 256, 0, stream>>>(keys1, keys2, keys3, u, n);
+        for (size_t d = u/2; d >= n_shared; d /= 2) {
+            global_sort_down<<<cld(n, 256), 256, 0, stream>>>(keys1, keys2, keys3, d, n);
         }
         block_sort<T1, T2, T3, block_threads, false><<<n_blocks, block_threads, 0, stream>>>(keys1, keys2, keys3, n);
     }
 }
 
 template <typename T1, typename T2, typename T3, typename T4>
-__host__ void sort(T1* keys1, T2* keys2, T3* keys3, T4* keys4, int n, cudaStream_t stream) {
+__host__ void sort(T1* keys1, T2* keys2, T3* keys3, T4* keys4, size_t n, cudaStream_t stream) {
 
-    const int block_threads = 1024; // must be power of two
-    const int n_shared = 2 * block_threads;
-    int n_blocks = (n + n_shared - 1) / n_shared;
+    const size_t block_threads = 1024; // must be power of two
+    const size_t n_shared = 2 * block_threads;
+    size_t n_blocks = (n + n_shared - 1) / n_shared;
 
     // block sort handles maximum stride of block_threads, or n_shared / 2
     block_sort<T1, T2, T3, T4, block_threads, true><<<n_blocks, block_threads, 0, stream>>>(keys1, keys2, keys3, keys4, n);
-    for (int u = n_shared; u < n; u += u) {
-        CUDA_LAUNCH(global_sort_up, n, stream, keys1, keys2, keys3, keys4, u);
-        for (int d = u/2; d >= n_shared; d /= 2) {
-            CUDA_LAUNCH(global_sort_down, n, stream, keys1, keys2, keys3, keys4, d);
+    for (size_t u = n_shared; u < n; u += u) {
+        global_sort_up<<<cld(n, 256), 256, 0, stream>>>(keys1, keys2, keys3, keys4, u, n);
+        for (size_t d = u/2; d >= n_shared; d /= 2) {
+            global_sort_down<<<cld(n, 256), 256, 0, stream>>>(keys1, keys2, keys3, keys4, d, n);
         }
         block_sort<T1, T2, T3, T4, block_threads, false><<<n_blocks, block_threads, 0, stream>>>(keys1, keys2, keys3, keys4, n);
     }
