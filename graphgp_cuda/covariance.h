@@ -6,51 +6,54 @@
 
 #include "common.h"
 
-__forceinline__ __device__ float cov_lookup(
-    float r,
-    const float *cov_bins,
-    const float *cov_vals,
-    int n_cov
+template <typename f_t>
+__forceinline__ __device__ f_t cov_lookup(
+    f_t r,
+    const f_t *cov_bins,
+    const f_t *cov_vals,
+    size_t n_cov
 ) {
-    int idx = searchsorted(cov_bins, r, n_cov);
+    size_t idx = searchsorted(cov_bins, r, n_cov);
     if (idx == 0) return cov_vals[0]; // not ideal, should have cov_bins[0] == 0.0f
     if (idx == n_cov) return cov_vals[n_cov - 1]; // outside bounds, return last value (should probably set to 0.0f)
 
     // inside bounds, interpolate
-    float r0 = cov_bins[idx - 1];
-    float r1 = cov_bins[idx];
-    float c0 = cov_vals[idx - 1];
-    float c1 = cov_vals[idx];
+    f_t r0 = cov_bins[idx - 1];
+    f_t r1 = cov_bins[idx];
+    f_t c0 = cov_vals[idx - 1];
+    f_t c1 = cov_vals[idx];
     if (r0 == r1) return c0; // avoid division by zero in case bins are somehow the same
     return c0 + (c1 - c0) * (r - r0) / (r1 - r0);
 }
 
+template <typename f_t>
 __forceinline__ __device__ void cov_lookup_matrix(
-    const float *points, // (n, d)
-    const float *cov_bins, // (R,)
-    const float *cov_vals, // (R,)
-    float *out, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
-    int n_points,
-    int n_dim,
-    int n_cov
+    const f_t *points, // (n, d)
+    const f_t *cov_bins, // (R,)
+    const f_t *cov_vals, // (R,)
+    f_t *out, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
+    size_t n_points,
+    size_t n_dim,
+    size_t n_cov
 ) {
-    for (int i = 0; i < n_points; ++i) {
-        for (int j = 0; j <= i; ++j) {
-            float r = compute_distance(points + (i * n_dim), points + (j * n_dim), n_dim);
+    for (size_t i = 0; i < n_points; ++i) {
+        for (size_t j = 0; j <= i; ++j) {
+            f_t r = sqrtf(compute_square_distance(points + (i * n_dim), points + (j * n_dim), n_dim));
             out[tri(i, j)] = cov_lookup(r, cov_bins, cov_vals, n_cov);
         }
     }
 }
 
 // atomic write cov tangent to appropriate bin
+template <typename f_t>
 __forceinline__ __device__ void cov_lookup_vjp(
-    float r,
-    float v,
-    const float *cov_bins,
-    float *cov_vals_tangent,
-    int n_cov
+    f_t r,
+    f_t v,
+    const f_t *cov_bins,
+    f_t *cov_vals_tangent,
+    size_t n_cov
 ) {
-    int idx = searchsorted(cov_bins, r, n_cov);
+    size_t idx = searchsorted(cov_bins, r, n_cov);
 
     if (idx == 0) {
         atomicAdd(cov_vals_tangent + 0, v);
@@ -62,8 +65,8 @@ __forceinline__ __device__ void cov_lookup_vjp(
     }
 
     // inside bounds, interpolate
-    float r0 = cov_bins[idx - 1];
-    float r1 = cov_bins[idx];
+    f_t r0 = cov_bins[idx - 1];
+    f_t r1 = cov_bins[idx];
     if (r0 == r1) {
         atomicAdd(cov_vals_tangent + idx - 1, v);
         return;
@@ -72,19 +75,20 @@ __forceinline__ __device__ void cov_lookup_vjp(
     atomicAdd(cov_vals_tangent + idx, v * (r - r0) / (r1 - r0));
 }
 
+template <typename f_t>
 __forceinline__ __device__ void cov_lookup_matrix_vjp(
-    const float *points, // (n, d)
-    const float *dA, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
-    const float *cov_bins, // (R,)
-    float *cov_vals_tangent, // (R,)
-    int n_points,
-    int n_dim,
-    int n_cov
+    const f_t *points, // (n, d)
+    const f_t *dA, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
+    const f_t *cov_bins, // (R,)
+    f_t *cov_vals_tangent, // (R,)
+    size_t n_points,
+    size_t n_dim,
+    size_t n_cov
 ) {
-    for (int i = 0; i < n_points; ++i) {
-        for (int j = 0; j <= i; ++j) {
-            float r = compute_distance(points + (i * n_dim), points + (j * n_dim), n_dim);
-            float sym = (i == j) ? 1.0f : 2.0f; // off diagonal must be added twice
+    for (size_t i = 0; i < n_points; ++i) {
+        for (size_t j = 0; j <= i; ++j) {
+            f_t r = sqrtf(compute_square_distance(points + (i * n_dim), points + (j * n_dim), n_dim));
+            f_t sym = (i == j) ? 1.0f : 2.0f; // off diagonal must be added twice
             cov_lookup_vjp(r, sym * dA[tri(i, j)], cov_bins, cov_vals_tangent, n_cov);
         }
     }
