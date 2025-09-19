@@ -701,7 +701,7 @@ Error build_graph_ffi_impl(
         depths, // use depths as split_dims
         indices,
         temp_int, // use temp for tags
-        temp_float, // use temp for ranges
+        temp_float + n_points, // use temp for ranges
         n_dim,
         n_points
     );
