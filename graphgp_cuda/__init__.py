@@ -8,6 +8,7 @@ from .primitive import (
     compute_depths_parallel,
     order_by_depth,
     build_graph,
+    fake_refine,
 )
 
 initialize()
@@ -21,4 +22,5 @@ __all__ = [
     "compute_depths_parallel",
     "order_by_depth",
     "build_graph",
+    "fake_refine",
 ]

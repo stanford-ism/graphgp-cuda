@@ -813,3 +813,47 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>()  // keys3_out
         .Ret<Buffer<F32>>()  // keys4_out
 );
+
+// ---------------------------------------------------------------------------------
+
+__global__ void fake_refine_kernel(
+    const float* points,
+    const int* neighbors,
+    const float* xi,
+    float* values,
+    size_t n
+) {
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    size_t neighbor_idx = neighbors[idx];
+    values[idx] = xi[neighbor_idx] + points[neighbor_idx];
+}
+
+Error fake_refine_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points,
+    Buffer<S32> neighbors,
+    Buffer<F32> xi,
+    ResultBuffer<F32> values
+) {
+    size_t n = points.dimensions()[0];
+
+    fake_refine_kernel<<<cld(n, 256), 256, 0, stream>>>(
+        points.typed_data(),
+        neighbors.typed_data(),
+        xi.typed_data(),
+        values->typed_data(),
+        n
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    fake_refine_ffi, fake_refine_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>()  // points
+        .Arg<Buffer<S32>>()  // neighbors
+        .Arg<Buffer<F32>>()  // xi
+        .Ret<Buffer<F32>>()  // values
+);

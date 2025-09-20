@@ -66,7 +66,6 @@ __global__ void batch_copy(const T *src, T *dest, size_t n_batches, size_t n_src
     if (tid >= n * n_batches) return;
     size_t b = tid / n; // batch index
     size_t i = tid % n; // index within batch
-    if (b >= n_batches) return;
     dest[b * n_dest + i] = src[b * n_src + i];
 }
 

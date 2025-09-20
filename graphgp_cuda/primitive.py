@@ -22,14 +22,18 @@ refine_inv_p = Primitive("graphgp_cuda_refine_inv")
 
 refine_logdet_p = Primitive("graphgp_cuda_refine_logdet")
 
+
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
     return refine_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+
 
 def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values):
     return refine_inv_p.bind(points, neighbors, offsets, cov_bins, cov_vals, values)
 
+
 def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
     return refine_logdet_p.bind(points, neighbors, offsets, cov_bins, cov_vals)
+
 
 def initialize():
     try:
@@ -52,6 +56,7 @@ def initialize():
         "compute_depths_parallel",
         "order_by_depth",
         "build_graph",
+        "fake_refine",
     ]:
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi",
@@ -269,6 +274,15 @@ def build_graph(points, *, n0, k):
     return points, indices, neighbors, depths
 
 
+def fake_refine(points, neighbors, xi):
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_fake_refine_ffi",
+        jax.ShapeDtypeStruct(xi.shape, jnp.float32),
+    )
+    values = call(points, neighbors, xi)
+    return values
+
+
 # ================= Helper functions for custom primitives ====================
 
 
@@ -292,7 +306,9 @@ def make_ffi_impl(ffi_name, abstract_eval):
 def make_batching_rule(prim, batch_args):
     def batching_rule(vector_args, batch_axes):
         bad_batch_args = tuple(
-            j for j, bd in enumerate(batch_axes) if j not in batch_args and bd is not batching.not_mapped
+            j
+            for j, bd in enumerate(batch_axes)
+            if j not in batch_args and bd is not batching.not_mapped
         )
         if len(bad_batch_args) > 0:
             raise NotImplementedError(
@@ -301,10 +317,15 @@ def make_batching_rule(prim, batch_args):
         (size,) = {
             x.shape[bd] for x, bd in zip(vector_args, batch_axes) if bd is not batching.not_mapped
         }
-        args = [
-            x if bd is batching.not_mapped else batching.bdim_at_front(x, bd, size)
-            for x, bd in zip(vector_args, batch_axes)
-        ]
+        args = []
+        for j, (x, bd) in enumerate(zip(vector_args, batch_axes)):
+            if bd is batching.not_mapped:
+                if j in batch_args:
+                    args.append(jnp.broadcast_to(x[None], (size,) + x.shape))
+                else:
+                    args.append(x)
+            else:
+                args.append(batching.bdim_at_front(x, bd, size))
         out = prim.bind(*args)
         return (out, (0,) * len(out)) if type(out) is tuple else (out, 0)
 
