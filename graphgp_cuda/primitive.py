@@ -148,6 +148,7 @@ def initialize():
         n_buffer=1,
         platform="gpu",
     )
+    refine_transpose_p.multiple_results = True
 
     setup_ffi_primitive(
         refine_jvp_p,
@@ -159,6 +160,7 @@ def initialize():
         n_transpose_buffer=1,
         platform="gpu",
     )
+    refine_jvp_p.multiple_results = True
 
     setup_ffi_primitive(
         refine_vjp_p,
@@ -170,6 +172,7 @@ def initialize():
         n_buffer=1,
         platform="gpu",
     )
+    refine_vjp_p.multiple_results = True
 
     setup_ffi_primitive(
         refine_inv_p,
@@ -179,6 +182,7 @@ def initialize():
         n_nonlinear=5,
         platform="gpu",
     )
+    refine_inv_p.multiple_results = True
 
     setup_ffi_primitive(
         refine_logdet_p,
@@ -348,9 +352,12 @@ def make_transpose_rule(transpose_prim, *, n_nonlinear=0, n_buffer=0, n_transpos
         tangents_in = transpose_prim.bind(
             *primals[:n_nonlinear], *tangents_out[: len(tangents_out) - n_buffer]
         )
+        if type(tangents_in) is list:
+            tangents_in = tuple(tangents_in)
         if type(tangents_in) is not tuple:
             tangents_in = (tangents_in,)
-        return (None,) * n_nonlinear + tangents_in[: len(tangents_in) - n_transpose_buffer]
+        tangents_in = (None,) * n_nonlinear + tangents_in[: len(tangents_in) - n_transpose_buffer] # TODO: convert back to scalar if single output?
+        return tangents_in
 
     return transpose_rule
 
@@ -366,14 +373,14 @@ def make_jvp_rule(prim, jvp_prim, *, n_nonlinear=0, n_linearized=0):
             return primals_out, (ad.Zero,) * len(primals)
 
         # linear case
-        elif all(type(t) is ad.Zero for t in tangents[:n_nonlinear]):
+        if all(type(t) is ad.Zero for t in tangents[:n_nonlinear]):
             tangents = tuple(
                 tan if type(tan) is not ad.Zero else lax.zeros_like_array(primal)
                 for primal, tan in zip(primals[n_nonlinear:], tangents[n_nonlinear:])
             )
             tangents_out = prim.bind(*primals[:n_nonlinear], *tangents)
 
-        # general case
+        # nonlinear case
         else:
             n_fixed = n_nonlinear - n_linearized
             if not all(type(t) is ad.Zero for t in tangents[:n_fixed]):
@@ -389,7 +396,7 @@ def make_jvp_rule(prim, jvp_prim, *, n_nonlinear=0, n_linearized=0):
                 tan if type(tan) is not ad.Zero else lax.zeros_like_array(primal)
                 for primal, tan in zip(primals[n_fixed:], tangents[n_fixed:])
             )
-            _, tangents_out = jvp_prim.bind(*primals, *tangents)
+            _, tangents_out = jvp_prim.bind(*primals, *tangents) # TODO: do primals on same forward pass if all concrete
 
         return primals_out, tangents_out
 
