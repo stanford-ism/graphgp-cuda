@@ -13,7 +13,7 @@ __global__ void update_depths_parallel(
     const i_t* neighbors,
     const i_t* old_depths,
     i_t* new_depths,
-    i_t* changed, // single flag 0 or 1
+    int* changed, // single flag 0 or 1, cannot be int64_t due to atomicOr for compatibility
     size_t n0,
     size_t k,
     size_t n_threads
@@ -55,23 +55,25 @@ __host__ void compute_depths_parallel(
     cudaMemsetAsync(old_depths, 0, n0 * sizeof(i_t), stream);
 
     // flag for when depths change
-    i_t changed = 1;
-    i_t* d_changed;
-    cudaMallocAsync(&d_changed, sizeof(i_t), stream);
+    int changed = 1;
+    int* d_changed;
+    cudaMallocAsync(&d_changed, sizeof(int), stream);
 
     // loop until depths don't change
     while (changed == 1) {
-        cudaMemsetAsync(d_changed, 0, sizeof(i_t), stream);
+        cudaMemsetAsync(d_changed, 0, sizeof(int), stream);
         i_t* tmp = new_depths; new_depths = old_depths; old_depths = tmp; // swap buffers
         update_depths_parallel<<<cld(n_points - n0, 256), 256, 0, stream>>>(
             neighbors, old_depths, new_depths, d_changed, n0, k, n_points - n0
         );
-        cudaMemcpyAsync(&changed, d_changed, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost, stream);
         cudaStreamSynchronize(stream);
     }
     if (new_depths != depths) {
         cudaMemcpyAsync(depths, new_depths, n_points * sizeof(i_t), cudaMemcpyDeviceToDevice, stream);
     }
+    
+    cudaFreeAsync(d_changed, stream);
 }
 
 

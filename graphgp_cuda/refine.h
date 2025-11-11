@@ -82,19 +82,15 @@ __host__ void refine(
     size_t n_cov,
     size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
 ) {
-    // copy offsets to host
-    i_t *offsets_host;
-    offsets_host = (i_t*)malloc(n_levels * sizeof(i_t));
-    if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
-    cudaMemcpy(offsets_host, offsets, n_levels * sizeof(i_t), cudaMemcpyDeviceToHost);
-
     // copy initial values to output values
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values, values, n_batches, n0, n_points, n0);
 
     // iteratively refine levels
+    i_t start_idx;
+    i_t end_idx;
     for (int level = 1; level < n_levels; ++level) {
-        size_t start_idx = offsets_host[level - 1];
-        size_t end_idx = offsets_host[level];
+        cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
         refine_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
@@ -111,8 +107,6 @@ __host__ void refine(
             start_idx,
             n_threads);
     }
-
-    free(offsets_host);
 }
 
 template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>  
@@ -193,20 +187,16 @@ __host__ void refine_transpose(
     size_t n_cov,
     size_t n_batches // batch dim only affects cov_vals, values, and all output buffers
 ) {
-    // copy offsets to host
-    i_t *offsets_host;
-    offsets_host = (i_t*)malloc(n_levels * sizeof(i_t));
-    if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
-    cudaMemcpy(offsets_host, offsets, n_levels * sizeof(i_t), cudaMemcpyDeviceToHost);
-
     // initialize output arrays
     cudaMemcpyAsync(values_buffer, values, n_batches * n_points * sizeof(f_t), cudaMemcpyDeviceToDevice, stream);
     cudaMemsetAsync(xi, 0, n_batches * (n_points - n0) * sizeof(f_t), stream);
 
     // walk backwards through levels and compute tangents
+    i_t start_idx;
+    i_t end_idx;
     for (size_t level = n_levels; level-- > 1;) {
-        size_t start_idx = offsets_host[level - 1];
-        size_t end_idx = offsets_host[level];
+        cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
         refine_transpose_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
@@ -226,8 +216,6 @@ __host__ void refine_transpose(
 
     // copy initial values to output
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(values_buffer, initial_values, n_batches, n_points, n0, n0);
-
-    free(offsets_host);
 }
 
 template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
@@ -333,20 +321,16 @@ __host__ void refine_jvp(
     size_t n_cov,
     size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
 ) {
-    // copy offsets to host
-    i_t *offsets_host;
-    offsets_host = (i_t*)malloc(n_levels * sizeof(i_t));
-    if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
-    cudaMemcpy(offsets_host, offsets, n_levels * sizeof(i_t), cudaMemcpyDeviceToHost);
-
     // copy initial values to output values
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values, values, n_batches, n0, n_points, n0);
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values_tangent, values_tangent, n_batches, n0, n_points, n0);
 
     // iteratively refine levels
+    i_t start_idx;
+    i_t end_idx;
     for (size_t level = 1; level < n_levels; ++level) {
-        size_t start_idx = offsets_host[level - 1];
-        size_t end_idx = offsets_host[level];
+        cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
         refine_jvp_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
@@ -366,8 +350,6 @@ __host__ void refine_jvp(
             start_idx,
             n_threads);
     }
-
-    free(offsets_host);
 }
 
 template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>  
@@ -475,21 +457,17 @@ __host__ void refine_vjp(
     size_t n_cov,
     size_t n_batches // batch dim only affects cov_vals, values_tangent, and all output buffers
 ) {
-    // copy offsets to host
-    i_t *offsets_host;
-    offsets_host = (i_t*)malloc(n_levels * sizeof(i_t));
-    if (offsets_host == nullptr) throw std::runtime_error("Failed to allocate memory for offsets on host");
-    cudaMemcpy(offsets_host, offsets, n_levels * sizeof(i_t), cudaMemcpyDeviceToHost);
-
     // initialize output arrays
     cudaMemcpyAsync(values_tangent_buffer, values_tangent, n_batches * n_points * sizeof(f_t), cudaMemcpyDeviceToDevice, stream);
     cudaMemsetAsync(xi_tangent, 0, n_batches * (n_points - n0) * sizeof(f_t), stream);
     cudaMemsetAsync(cov_vals_tangent, 0, n_batches * n_cov * sizeof(f_t), stream);
 
     // walk backwards through levels and compute tangents
+    i_t start_idx;
+    i_t end_idx;
     for (size_t level = n_levels; level-- > 1;) {
-        size_t start_idx = offsets_host[level - 1];
-        size_t end_idx = offsets_host[level];
+        cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
         refine_vjp_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
@@ -512,6 +490,4 @@ __host__ void refine_vjp(
 
     // copy initial values_tangent to output
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(values_tangent_buffer, initial_values_tangent, n_batches, n_points, n0, n0);
-
-    free(offsets_host);
 }

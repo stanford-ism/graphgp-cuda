@@ -38,7 +38,7 @@ __forceinline__ __device__ void cov_lookup_matrix(
 ) {
     for (size_t i = 0; i < n_points; ++i) {
         for (size_t j = 0; j <= i; ++j) {
-            f_t r = sqrtf(compute_square_distance(points + (i * n_dim), points + (j * n_dim), n_dim));
+            f_t r = sqrt(compute_square_distance(points + (i * n_dim), points + (j * n_dim), n_dim));
             out[tri(i, j)] = cov_lookup(r, cov_bins, cov_vals, n_cov);
         }
     }
@@ -87,8 +87,8 @@ __forceinline__ __device__ void cov_lookup_matrix_vjp(
 ) {
     for (size_t i = 0; i < n_points; ++i) {
         for (size_t j = 0; j <= i; ++j) {
-            f_t r = sqrtf(compute_square_distance(points + (i * n_dim), points + (j * n_dim), n_dim));
-            f_t sym = (i == j) ? 1.0f : 2.0f; // off diagonal must be added twice
+            f_t r = sqrt(compute_square_distance(points + (i * n_dim), points + (j * n_dim), n_dim));
+            f_t sym = (i == j) ? f_t(1.0) : f_t(2.0); // off diagonal must be added twice
             cov_lookup_vjp(r, sym * dA[tri(i, j)], cov_bins, cov_vals_tangent, n_cov);
         }
     }

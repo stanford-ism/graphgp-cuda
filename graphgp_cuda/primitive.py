@@ -17,9 +17,7 @@ refine_p = Primitive("graphgp_cuda_refine")
 refine_transpose_p = Primitive("graphgp_cuda_refine_transpose")
 refine_jvp_p = Primitive("graphgp_cuda_refine_jvp")
 refine_vjp_p = Primitive("graphgp_cuda_refine_vjp")
-
 refine_inv_p = Primitive("graphgp_cuda_refine_inv")
-
 refine_logdet_p = Primitive("graphgp_cuda_refine_logdet")
 
 
@@ -56,11 +54,17 @@ def initialize():
         "compute_depths_parallel",
         "order_by_depth",
         "build_graph",
-        "fake_refine",
+        "sort",
+        "sort_three",
     ]:
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi",
             jax.ffi.pycapsule(getattr(lib, f"{name}_ffi")),
+            platform="gpu",
+        )
+        jax.ffi.register_ffi_target(
+            f"graphgp_cuda_{name}_ffi_64",
+            jax.ffi.pycapsule(getattr(lib, f"{name}_ffi_64")),
             platform="gpu",
         )
 
@@ -69,16 +73,20 @@ def initialize():
     def refine_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
         n = points.shape[0]
         batch_shape = initial_values.shape[:-1]
-        return ShapedArray(batch_shape + (n,), jnp.float32)
+        _, float_dtype, _ = _determine_dtype(
+            points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi
+        )
+        return ShapedArray(batch_shape + (n,), float_dtype)
 
     def refine_transpose_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, values):
         n = points.shape[0]
         n0 = n - neighbors.shape[0]
         batch_shape = values.shape[:-1]
+        _, float_dtype, _ = _determine_dtype(points, neighbors, offsets, cov_bins, cov_vals, values)
         return (
-            ShapedArray(batch_shape + (n0,), jnp.float32),
-            ShapedArray(batch_shape + (n - n0,), jnp.float32),
-            ShapedArray(batch_shape + (n,), jnp.float32),
+            ShapedArray(batch_shape + (n0,), float_dtype),
+            ShapedArray(batch_shape + (n - n0,), float_dtype),
+            ShapedArray(batch_shape + (n,), float_dtype),
         )
 
     def refine_jvp_abstract_eval(
@@ -95,33 +103,58 @@ def initialize():
     ):
         n = points.shape[0]
         batch_shape = initial_values.shape[:-1]
+        _, float_dtype, _ = _determine_dtype(
+            points,
+            neighbors,
+            offsets,
+            cov_bins,
+            cov_vals,
+            initial_values,
+            xi,
+            cov_vals_tangent,
+            initial_values_tangent,
+            xi_tangent,
+        )
         return (
-            ShapedArray(batch_shape + (n,), jnp.float32),
-            ShapedArray(batch_shape + (n,), jnp.float32),
+            ShapedArray(batch_shape + (n,), float_dtype),
+            ShapedArray(batch_shape + (n,), float_dtype),
         )
 
     def refine_vjp_abstract_eval(
         points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, values, values_tangent
     ):
+        _, float_dtype, _ = _determine_dtype(
+            points,
+            neighbors,
+            offsets,
+            cov_bins,
+            cov_vals,
+            initial_values,
+            xi,
+            values,
+            values_tangent,
+        )
         return (
-            ShapedArray(cov_vals.shape, jnp.float32),
-            ShapedArray(initial_values.shape, jnp.float32),
-            ShapedArray(xi.shape, jnp.float32),
-            ShapedArray(values.shape, jnp.float32),
+            ShapedArray(cov_vals.shape, float_dtype),
+            ShapedArray(initial_values.shape, float_dtype),
+            ShapedArray(xi.shape, float_dtype),
+            ShapedArray(values.shape, float_dtype),
         )
 
     def refine_inv_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, values):
         n = points.shape[0]
         n0 = n - neighbors.shape[0]
         batch_shape = values.shape[:-1]
+        _, float_dtype, _ = _determine_dtype(points, neighbors, offsets, cov_bins, cov_vals, values)
         return (
-            ShapedArray(batch_shape + (n0,), jnp.float32),  # initial_values
-            ShapedArray(batch_shape + (n - n0,), jnp.float32),  # xi
+            ShapedArray(batch_shape + (n0,), float_dtype),  # initial_values
+            ShapedArray(batch_shape + (n - n0,), float_dtype),  # xi
         )
 
     def refine_logdet_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals):
         batch_shape = cov_vals.shape[:-1]
-        return ShapedArray(batch_shape, jnp.float32)  # logdet
+        _, float_dtype, _ = _determine_dtype(points, neighbors, offsets, cov_bins, cov_vals)
+        return ShapedArray(batch_shape, float_dtype)  # logdet
 
     # Automatically set up all primitives
 
@@ -199,92 +232,91 @@ def initialize():
 
 @jax.jit
 def build_tree(points):
+    int_dtype, float_dtype, type_suffix = _determine_dtype(points)
     call = jax.ffi.ffi_call(
-        "graphgp_cuda_build_tree_ffi",
+        "graphgp_cuda_build_tree_ffi" + type_suffix,
         (
-            jax.ShapeDtypeStruct(points.shape, jnp.float32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.float32),
+            jax.ShapeDtypeStruct(points.shape, float_dtype),
+            jax.ShapeDtypeStruct((points.shape[0],), int_dtype),
+            jax.ShapeDtypeStruct((points.shape[0],), int_dtype),
+            jax.ShapeDtypeStruct((points.shape[0],), int_dtype),
+            jax.ShapeDtypeStruct((points.shape[0],), float_dtype),
         ),
     )
-    points, split_dims, indices, tags, ranges = call(points)
+    points, split_dims, indices, tags, ranges = call(*_cast_all(points))
     return points, split_dims, indices
 
 
 @Partial(jax.jit, static_argnames=("n0", "k"))
 def query_preceding_neighbors(points, split_dims, *, n0, k):
+    int_dtype, float_dtype, type_suffix = _determine_dtype(points)
     call = jax.ffi.ffi_call(
-        "graphgp_cuda_query_preceding_neighbors_ffi",
-        jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
+        "graphgp_cuda_query_preceding_neighbors_ffi" + type_suffix,
+        jax.ShapeDtypeStruct((points.shape[0] - n0, k), int_dtype),
     )
-    neighbors = call(points, split_dims)
+    neighbors = call(*_cast_all(points, split_dims))
     return neighbors
 
 
 @Partial(jax.jit, static_argnames=("k"))
 def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_query_neighbors_ffi",
-        jax.ShapeDtypeStruct((query_indices.shape[0], k), jnp.int32),
+    int_dtype, float_dtype, type_suffix = _determine_dtype(
+        points, split_dims, query_indices, max_indices
     )
-    neighbors = call(points, split_dims, query_indices, max_indices)
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_query_neighbors_ffi" + type_suffix,
+        jax.ShapeDtypeStruct((query_indices.shape[0], k), int_dtype),
+    )
+    neighbors = call(*_cast_all(points, split_dims, query_indices, max_indices))
     return neighbors
 
 
 @Partial(jax.jit, static_argnames="n0")
 def compute_depths_parallel(neighbors, *, n0):
+    int_dtype, _, type_suffix = _determine_dtype(neighbors)
     call = jax.ffi.ffi_call(
-        "graphgp_cuda_compute_depths_parallel_ffi",
+        "graphgp_cuda_compute_depths_parallel_ffi" + type_suffix,
         (
-            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
-            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), jnp.int32),
+            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), int_dtype),
+            jax.ShapeDtypeStruct((neighbors.shape[0] + n0,), int_dtype),
         ),
     )
-    depths, temp = call(neighbors)
+    depths, temp = call(*_cast_all(neighbors))
     return depths
 
 
 @jax.jit
 def order_by_depth(points, indices, neighbors, depths):
+    int_dtype, float_dtype, type_suffix = _determine_dtype(points, indices, neighbors, depths)
     call = jax.ffi.ffi_call(
-        "graphgp_cuda_order_by_depth_ffi",
+        "graphgp_cuda_order_by_depth_ffi" + type_suffix,
         (
-            jax.ShapeDtypeStruct(points.shape, jnp.float32),
-            jax.ShapeDtypeStruct(indices.shape, jnp.int32),
-            jax.ShapeDtypeStruct(neighbors.shape, jnp.int32),
-            jax.ShapeDtypeStruct(depths.shape, jnp.int32),
-            jax.ShapeDtypeStruct((2 * points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct(points.shape, float_dtype),
+            jax.ShapeDtypeStruct(indices.shape, int_dtype),
+            jax.ShapeDtypeStruct(neighbors.shape, int_dtype),
+            jax.ShapeDtypeStruct(depths.shape, int_dtype),
+            jax.ShapeDtypeStruct((2 * points.shape[0],), int_dtype),
         ),
     )
-    points, indices, neighbors, depths, _ = call(points, indices, neighbors, depths)
+    points, indices, neighbors, depths, _ = call(*_cast_all(points, indices, neighbors, depths))
     return points, indices, neighbors, depths
 
 
 @Partial(jax.jit, static_argnames=("n0", "k"))
 def build_graph(points, *, n0, k):
+    int_dtype, float_dtype, type_suffix = _determine_dtype(points)
     call = jax.ffi.ffi_call(
-        "graphgp_cuda_build_graph_ffi",
+        "graphgp_cuda_build_graph_ffi" + type_suffix,
         (
-            jax.ShapeDtypeStruct(points.shape, jnp.float32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0] - n0, k), jnp.int32),
-            jax.ShapeDtypeStruct((points.shape[0],), jnp.int32),
-            jax.ShapeDtypeStruct((2 * points.shape[0],), jnp.int32),
+            jax.ShapeDtypeStruct(points.shape, float_dtype),
+            jax.ShapeDtypeStruct((points.shape[0],), int_dtype),
+            jax.ShapeDtypeStruct((points.shape[0] - n0, k), int_dtype),
+            jax.ShapeDtypeStruct((points.shape[0],), int_dtype),
+            jax.ShapeDtypeStruct((2 * points.shape[0],), int_dtype),
         ),
     )
-    points, indices, neighbors, depths, _ = call(points)
+    points, indices, neighbors, depths, _ = call(*_cast_all(points))
     return points, indices, neighbors, depths
-
-
-def fake_refine(points, neighbors, xi):
-    call = jax.ffi.ffi_call(
-        "graphgp_cuda_fake_refine_ffi",
-        jax.ShapeDtypeStruct(xi.shape, jnp.float32),
-    )
-    values = call(points, neighbors, xi)
-    return values
 
 
 # ================= Helper functions for custom primitives ====================
@@ -298,10 +330,11 @@ def make_ffi_impl(ffi_name, abstract_eval):
             abstract_out = ShapeDtypeStruct(abstract_out.shape, abstract_out.dtype)
         elif isinstance(abstract_out, tuple):
             abstract_out = tuple(ShapeDtypeStruct(s.shape, s.dtype) for s in abstract_out)
+        _, _, type_suffix = _determine_dtype(*args)
         return jax.ffi.ffi_call(
-            ffi_name,
+            ffi_name + type_suffix,
             abstract_out,
-        )(*args)
+        )(*_cast_all(*args))
 
     return impl
 
@@ -343,6 +376,8 @@ def make_transpose_rule(transpose_prim, *, n_nonlinear=0, n_buffer=0, n_transpos
             raise ValueError("Transposition only valid for linear arguments.")
         if not all(ad.is_undefined_primal(t) for t in primals[n_nonlinear:]):
             raise ValueError("Not all linear arguments were undefined primals?")
+        if type(tangents_out) is list:  # TODO: why is this a list?
+            tangents_out = tuple(tangents_out)
         if type(tangents_out) is not tuple:
             tangents_out = (tangents_out,)
         if all(type(t) is ad.Zero for t in tangents_out):
@@ -352,11 +387,13 @@ def make_transpose_rule(transpose_prim, *, n_nonlinear=0, n_buffer=0, n_transpos
         tangents_in = transpose_prim.bind(
             *primals[:n_nonlinear], *tangents_out[: len(tangents_out) - n_buffer]
         )
-        if type(tangents_in) is list:
+        if type(tangents_in) is list:  # TODO: why is this a list?
             tangents_in = tuple(tangents_in)
         if type(tangents_in) is not tuple:
             tangents_in = (tangents_in,)
-        tangents_in = (None,) * n_nonlinear + tangents_in[: len(tangents_in) - n_transpose_buffer] # TODO: convert back to scalar if single output?
+        tangents_in = (None,) * n_nonlinear + tangents_in[
+            : len(tangents_in) - n_transpose_buffer
+        ]  # TODO: convert back to scalar if single output?
         return tangents_in
 
     return transpose_rule
@@ -396,7 +433,9 @@ def make_jvp_rule(prim, jvp_prim, *, n_nonlinear=0, n_linearized=0):
                 tan if type(tan) is not ad.Zero else lax.zeros_like_array(primal)
                 for primal, tan in zip(primals[n_fixed:], tangents[n_fixed:])
             )
-            _, tangents_out = jvp_prim.bind(*primals, *tangents) # TODO: do primals on same forward pass if all concrete
+            _, tangents_out = jvp_prim.bind(
+                *primals, *tangents
+            )  # TODO: do primals on same forward pass if all concrete
 
         return primals_out, tangents_out
 
@@ -435,3 +474,21 @@ def setup_ffi_primitive(
     )
     mlir.register_lowering(prim, jax.ffi.ffi_lowering(ffi_name), platform=platform)
     return prim, prim.bind
+
+
+def _determine_dtype(*args):
+    for x in args:
+        if x.dtype in (jnp.int64, jnp.float64):
+            return jnp.int64, jnp.float64, "_64"
+    return jnp.int32, jnp.float32, ""
+
+
+def _cast_all(*args):
+    int_dtype, float_dtype, _ = _determine_dtype(*args)
+    casted_args = []
+    for x in args:
+        if x.dtype in (jnp.int32, jnp.int64):
+            casted_args.append(x.astype(int_dtype))
+        else:
+            casted_args.append(x.astype(float_dtype))
+    return tuple(casted_args)

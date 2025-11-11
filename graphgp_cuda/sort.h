@@ -33,6 +33,8 @@ __forceinline__ __device__ int32_t max_value() { return INT_MAX; };
 template<>
 __forceinline__ __device__ uint64_t max_value() { return ULONG_MAX; };
 template<>
+__forceinline__ __device__ int64_t max_value() { return LONG_MAX; };
+template<>
 __forceinline__ __device__ float max_value() { return INFINITY; };
 template<>
 __forceinline__ __device__ double max_value() { return INFINITY; };
@@ -497,7 +499,7 @@ __global__ void block_sort(T1* g_keys1, T2* g_keys2, T3* g_keys3, T4* g_keys4, s
 template <typename T>
 __host__ void sort(T* keys, size_t n, cudaStream_t stream) {
 
-    const size_t block_threads = 1024; // must be power of two
+    const size_t block_threads = 512; // must be power of two
     const size_t n_shared = 2 * block_threads;
     size_t n_blocks = (n + n_shared - 1) / n_shared;
 
@@ -515,7 +517,7 @@ __host__ void sort(T* keys, size_t n, cudaStream_t stream) {
 template <typename T1, typename T2>
 __host__ void sort(T1* keys1, T2* keys2, size_t n, cudaStream_t stream) {
 
-    const size_t block_threads = 1024; // must be power of two
+    const size_t block_threads = 512; // must be power of two
     const size_t n_shared = 2 * block_threads;
     size_t n_blocks = (n + n_shared - 1) / n_shared;
 
@@ -533,7 +535,7 @@ __host__ void sort(T1* keys1, T2* keys2, size_t n, cudaStream_t stream) {
 template <typename T1, typename T2, typename T3>
 __host__ void sort(T1* keys1, T2* keys2, T3* keys3, size_t n, cudaStream_t stream) {
 
-    const size_t block_threads = 1024; // must be power of two
+    const size_t block_threads = 512; // must be power of two
     const size_t n_shared = 2 * block_threads;
     size_t n_blocks = (n + n_shared - 1) / n_shared;
 
@@ -551,7 +553,7 @@ __host__ void sort(T1* keys1, T2* keys2, T3* keys3, size_t n, cudaStream_t strea
 template <typename T1, typename T2, typename T3, typename T4>
 __host__ void sort(T1* keys1, T2* keys2, T3* keys3, T4* keys4, size_t n, cudaStream_t stream) {
 
-    const size_t block_threads = 1024; // must be power of two
+    const size_t block_threads = 512; // must be power of two
     const size_t n_shared = 2 * block_threads;
     size_t n_blocks = (n + n_shared - 1) / n_shared;
 

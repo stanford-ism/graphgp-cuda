@@ -15,20 +15,20 @@
 
 __forceinline__ __device__ size_t compute_left(size_t current) {
     size_t level = floored_log2(current + 1);
-    size_t n_level = 1 << level;
+    size_t n_level = (size_t)1 << level;
     return current + n_level;
 }
 
 __forceinline__ __device__ size_t compute_right(size_t current) {
     size_t level = floored_log2(current + 1);
-    size_t n_level = 1 << level;
+    size_t n_level = (size_t)1 << level;
     return current + 2 * n_level;
 }
 
 __forceinline__ __device__ size_t compute_parent(size_t current) {
     size_t level = floored_log2(current + 1);
-    size_t n_above = (1 << level) - 1;
-    size_t n_parent_level = 1 << (level - 1);
+    size_t n_above = ((size_t)1 << level) - 1;
+    size_t n_parent_level = (size_t)1 << (level - 1);
     size_t parent = (current < n_above + n_parent_level) ? (current - n_parent_level) : (current - 2 * n_parent_level);
     return (current == 0) ? SIZE_MAX : parent;  // use SIZE_MAX as sentinel, almost certainly safe
 }
@@ -113,7 +113,7 @@ __host__ void build_tree(
     arange_kernel<i_t><<<cld(n_points, 256), 256, 0, stream>>>(indices, n_points);
 
     for (size_t level = 0; level < n_levels; ++level) {
-        size_t n_above = (1 << level) - 1;
+        size_t n_above = ((size_t)1 << level) - 1;
         size_t n_remaining = n_points - n_above;
 
         // compute split_dim with the largest range
@@ -127,7 +127,8 @@ __host__ void build_tree(
                 sort(tags, points, n_points, stream); // doesn't move tags, don't need to move split_dims or indices
             }
             update_ranges<<<cld(n_remaining, 256), 256, 0, stream>>>(
-                tags, points, ranges, split_dims, dim, n_above, n_remaining);
+                tags, points, ranges, split_dims, dim, n_above, n_remaining
+            );
         }
 
         // sort along split_dim and update tags

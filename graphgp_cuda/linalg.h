@@ -88,7 +88,7 @@ __forceinline__ __device__ void cholesky(
         for (int j = 0; j < i; ++j) {
             sum += A[tri(i, j)] * A[tri(i, j)];
         }
-        A[tri(i, i)] = sqrtf(A[tri(i, i)] - sum);
+        A[tri(i, i)] = sqrt(A[tri(i, i)] - sum);
     }
 }
 

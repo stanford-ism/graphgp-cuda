@@ -70,7 +70,8 @@ __global__ void batch_copy(const T *src, T *dest, size_t n_batches, size_t n_src
 }
 
 // compute indices to undo a permutation
-__global__ void compute_inverse_permutation(const int* permutation, int* inv_permutation, int n) {
+template <typename i_t>
+__global__ void compute_inverse_permutation(const i_t* permutation, i_t* inv_permutation, size_t n) {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
     inv_permutation[permutation[tid]] = tid;
