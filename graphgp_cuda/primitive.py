@@ -13,6 +13,9 @@ from jax.interpreters import mlir, batching, ad
 from jax import lax
 from jax.tree_util import Partial
 
+# NOTE: This file is verbose and repetitive. Effort was made to reduce boilerplate with automatic primitive
+# registration, although this results in confusing code. Waiting for jax to make this process easier.
+
 refine_p = Primitive("graphgp_cuda_refine")
 refine_transpose_p = Primitive("graphgp_cuda_refine_transpose")
 refine_jvp_p = Primitive("graphgp_cuda_refine_jvp")
@@ -20,18 +23,54 @@ refine_vjp_p = Primitive("graphgp_cuda_refine_vjp")
 refine_inv_p = Primitive("graphgp_cuda_refine_inv")
 refine_logdet_p = Primitive("graphgp_cuda_refine_logdet")
 
+refine_p_64 = Primitive("graphgp_cuda_refine_64")
+refine_transpose_p_64 = Primitive("graphgp_cuda_refine_transpose_64")
+refine_jvp_p_64 = Primitive("graphgp_cuda_refine_jvp_64")
+refine_vjp_p_64 = Primitive("graphgp_cuda_refine_vjp_64")
+refine_inv_p_64 = Primitive("graphgp_cuda_refine_inv_64")
+refine_logdet_p_64 = Primitive("graphgp_cuda_refine_logdet_64")
+
+
 
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-    return refine_p.bind(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+    casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+    if casted_args[0].dtype == jnp.float64:
+        return refine_p_64.bind(*casted_args)
+    else:
+        return refine_p.bind(*casted_args)
 
 
 def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values):
-    return refine_inv_p.bind(points, neighbors, offsets, cov_bins, cov_vals, values)
+    casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, values)
+    if casted_args[0].dtype == jnp.float64:
+        return refine_inv_p_64.bind(*casted_args)
+    else:
+        return refine_inv_p.bind(*casted_args)
 
 
 def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
-    return refine_logdet_p.bind(points, neighbors, offsets, cov_bins, cov_vals)
+    casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals)
+    if casted_args[0].dtype == jnp.float64:
+        return refine_logdet_p_64.bind(*casted_args)
+    else:
+        return refine_logdet_p.bind(*casted_args)
 
+def _determine_dtype(*args):
+    for x in args:
+        if x.dtype in (jnp.int64, jnp.float64):
+            return jnp.int64, jnp.float64, "_64"
+    return jnp.int32, jnp.float32, ""
+
+
+def _cast_all(*args):
+    int_dtype, float_dtype, _ = _determine_dtype(*args)
+    casted_args = []
+    for x in args:
+        if jnp.issubdtype(x.dtype, jnp.integer):
+            casted_args.append(x.astype(int_dtype))
+        else:
+            casted_args.append(x.astype(float_dtype))
+    return tuple(casted_args)
 
 def initialize():
     try:
@@ -70,23 +109,23 @@ def initialize():
 
     # Define abstract evaluations, these essentially serve as the definitions of the FFI functions in Python
 
-    def refine_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
+    def refine_abstract_eval(
+        points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, dtype=jnp.float32
+    ):
         n = points.shape[0]
         batch_shape = initial_values.shape[:-1]
-        _, float_dtype, _ = _determine_dtype(
-            points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi
-        )
-        return ShapedArray(batch_shape + (n,), float_dtype)
+        return ShapedArray(batch_shape + (n,), dtype)
 
-    def refine_transpose_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, values):
+    def refine_transpose_abstract_eval(
+        points, neighbors, offsets, cov_bins, cov_vals, values, dtype=jnp.float32
+    ):
         n = points.shape[0]
         n0 = n - neighbors.shape[0]
         batch_shape = values.shape[:-1]
-        _, float_dtype, _ = _determine_dtype(points, neighbors, offsets, cov_bins, cov_vals, values)
         return (
-            ShapedArray(batch_shape + (n0,), float_dtype),
-            ShapedArray(batch_shape + (n - n0,), float_dtype),
-            ShapedArray(batch_shape + (n,), float_dtype),
+            ShapedArray(batch_shape + (n0,), dtype),
+            ShapedArray(batch_shape + (n - n0,), dtype),
+            ShapedArray(batch_shape + (n,), dtype),
         )
 
     def refine_jvp_abstract_eval(
@@ -100,64 +139,52 @@ def initialize():
         cov_vals_tangent,
         initial_values_tangent,
         xi_tangent,
+        dtype=jnp.float32,
     ):
         n = points.shape[0]
         batch_shape = initial_values.shape[:-1]
-        _, float_dtype, _ = _determine_dtype(
-            points,
-            neighbors,
-            offsets,
-            cov_bins,
-            cov_vals,
-            initial_values,
-            xi,
-            cov_vals_tangent,
-            initial_values_tangent,
-            xi_tangent,
-        )
         return (
-            ShapedArray(batch_shape + (n,), float_dtype),
-            ShapedArray(batch_shape + (n,), float_dtype),
+            ShapedArray(batch_shape + (n,), dtype),
+            ShapedArray(batch_shape + (n,), dtype),
         )
 
     def refine_vjp_abstract_eval(
-        points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, values, values_tangent
+        points,
+        neighbors,
+        offsets,
+        cov_bins,
+        cov_vals,
+        initial_values,
+        xi,
+        values,
+        values_tangent,
+        dtype=jnp.float32,
     ):
-        _, float_dtype, _ = _determine_dtype(
-            points,
-            neighbors,
-            offsets,
-            cov_bins,
-            cov_vals,
-            initial_values,
-            xi,
-            values,
-            values_tangent,
-        )
         return (
-            ShapedArray(cov_vals.shape, float_dtype),
-            ShapedArray(initial_values.shape, float_dtype),
-            ShapedArray(xi.shape, float_dtype),
-            ShapedArray(values.shape, float_dtype),
+            ShapedArray(cov_vals.shape, dtype),
+            ShapedArray(initial_values.shape, dtype),
+            ShapedArray(xi.shape, dtype),
+            ShapedArray(values.shape, dtype),
         )
 
-    def refine_inv_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals, values):
+    def refine_inv_abstract_eval(
+        points, neighbors, offsets, cov_bins, cov_vals, values, dtype=jnp.float32
+    ):
         n = points.shape[0]
         n0 = n - neighbors.shape[0]
         batch_shape = values.shape[:-1]
-        _, float_dtype, _ = _determine_dtype(points, neighbors, offsets, cov_bins, cov_vals, values)
         return (
-            ShapedArray(batch_shape + (n0,), float_dtype),  # initial_values
-            ShapedArray(batch_shape + (n - n0,), float_dtype),  # xi
+            ShapedArray(batch_shape + (n0,), dtype),  # initial_values
+            ShapedArray(batch_shape + (n - n0,), dtype),  # xi
         )
 
-    def refine_logdet_abstract_eval(points, neighbors, offsets, cov_bins, cov_vals):
+    def refine_logdet_abstract_eval(
+        points, neighbors, offsets, cov_bins, cov_vals, dtype=jnp.float32
+    ):
         batch_shape = cov_vals.shape[:-1]
-        _, float_dtype, _ = _determine_dtype(points, neighbors, offsets, cov_bins, cov_vals)
-        return ShapedArray(batch_shape, float_dtype)  # logdet
+        return ShapedArray(batch_shape, dtype)  # logdet
 
     # Automatically set up all primitives
-
     setup_ffi_primitive(
         refine_p,
         "graphgp_cuda_refine_ffi",
@@ -221,6 +248,75 @@ def initialize():
         refine_logdet_p,
         "graphgp_cuda_refine_logdet_ffi",
         refine_logdet_abstract_eval,
+        batch_args=(4,),
+        n_nonlinear=5,
+        platform="gpu",
+    )
+
+    # Set up 64 bit versions
+    setup_ffi_primitive(
+        refine_p_64,
+        "graphgp_cuda_refine_ffi_64",
+        Partial(refine_abstract_eval, dtype=jnp.float64),
+        batch_args=(4, 5, 6),
+        transpose_prim=refine_transpose_p_64,
+        jvp_prim=refine_jvp_p_64,
+        n_nonlinear=5,
+        n_linearized=1,
+        n_transpose_buffer=1,
+        platform="gpu",
+    )
+
+    setup_ffi_primitive(
+        refine_transpose_p_64,
+        "graphgp_cuda_refine_transpose_ffi_64",
+        Partial(refine_transpose_abstract_eval, dtype=jnp.float64),
+        batch_args=(4, 5),
+        transpose_prim=refine_p_64,
+        n_nonlinear=5,
+        n_buffer=1,
+        platform="gpu",
+    )
+    refine_transpose_p_64.multiple_results = True
+
+    setup_ffi_primitive(
+        refine_jvp_p_64,
+        "graphgp_cuda_refine_jvp_ffi_64",
+        Partial(refine_jvp_abstract_eval, dtype=jnp.float64),
+        batch_args=(4, 5, 6, 7, 8, 9),
+        transpose_prim=refine_vjp_p_64,
+        n_nonlinear=7,
+        n_transpose_buffer=1,
+        platform="gpu",
+    )
+    refine_jvp_p_64.multiple_results = True
+
+    setup_ffi_primitive(
+        refine_vjp_p_64,
+        "graphgp_cuda_refine_vjp_ffi_64",
+        Partial(refine_vjp_abstract_eval, dtype=jnp.float64),
+        batch_args=(4, 5, 6, 7, 8),
+        transpose_prim=refine_jvp_p_64,
+        n_nonlinear=7,
+        n_buffer=1,
+        platform="gpu",
+    )
+    refine_vjp_p_64.multiple_results = True
+
+    setup_ffi_primitive(
+        refine_inv_p_64,
+        "graphgp_cuda_refine_inv_ffi_64",
+        Partial(refine_inv_abstract_eval, dtype=jnp.float64),
+        batch_args=(4, 5),
+        n_nonlinear=5,
+        platform="gpu",
+    )
+    refine_inv_p_64.multiple_results = True
+
+    setup_ffi_primitive(
+        refine_logdet_p_64,
+        "graphgp_cuda_refine_logdet_ffi_64",
+        Partial(refine_logdet_abstract_eval, dtype=jnp.float64),
         batch_args=(4,),
         n_nonlinear=5,
         platform="gpu",
@@ -330,11 +426,10 @@ def make_ffi_impl(ffi_name, abstract_eval):
             abstract_out = ShapeDtypeStruct(abstract_out.shape, abstract_out.dtype)
         elif isinstance(abstract_out, tuple):
             abstract_out = tuple(ShapeDtypeStruct(s.shape, s.dtype) for s in abstract_out)
-        _, _, type_suffix = _determine_dtype(*args)
         return jax.ffi.ffi_call(
-            ffi_name + type_suffix,
+            ffi_name,
             abstract_out,
-        )(*_cast_all(*args))
+        )(*args)
 
     return impl
 
@@ -472,23 +567,7 @@ def setup_ffi_primitive(
     ad.primitive_jvps[prim] = make_jvp_rule(
         prim, jvp_prim, n_nonlinear=n_nonlinear, n_linearized=n_linearized
     )
-    mlir.register_lowering(prim, jax.ffi.ffi_lowering(ffi_name), platform=platform)
+    mlir.register_lowering(
+        prim, jax.ffi.ffi_lowering(ffi_name), platform=platform
+    )  # TODO: lowering is type-specific?
     return prim, prim.bind
-
-
-def _determine_dtype(*args):
-    for x in args:
-        if x.dtype in (jnp.int64, jnp.float64):
-            return jnp.int64, jnp.float64, "_64"
-    return jnp.int32, jnp.float32, ""
-
-
-def _cast_all(*args):
-    int_dtype, float_dtype, _ = _determine_dtype(*args)
-    casted_args = []
-    for x in args:
-        if x.dtype in (jnp.int32, jnp.int64):
-            casted_args.append(x.astype(int_dtype))
-        else:
-            casted_args.append(x.astype(float_dtype))
-    return tuple(casted_args)
