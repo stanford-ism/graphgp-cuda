@@ -459,7 +459,10 @@ def make_batching_rule(prim, batch_args):
             else:
                 args.append(batching.bdim_at_front(x, bd, size))
         out = prim.bind(*args)
-        return (out, (0,) * len(out)) if type(out) is tuple else (out, 0)
+        if prim.multiple_results:
+            return out, (0,) * len(out)
+        else:
+            return out, 0
 
     return batching_rule
 
@@ -569,5 +572,5 @@ def setup_ffi_primitive(
     )
     mlir.register_lowering(
         prim, jax.ffi.ffi_lowering(ffi_name), platform=platform
-    )  # TODO: lowering is type-specific?
+    )
     return prim, prim.bind
