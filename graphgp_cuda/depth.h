@@ -5,7 +5,6 @@
 #include <cstdint>
 #include "common.h"
 #include "sort.h"
-#include "cubit/cubit.h"
 
 // alternative approach where we just update depths a bunch of times and hope for the best
 template <typename i_t>

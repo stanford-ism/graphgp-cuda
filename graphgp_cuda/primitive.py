@@ -31,7 +31,6 @@ refine_inv_p_64 = Primitive("graphgp_cuda_refine_inv_64")
 refine_logdet_p_64 = Primitive("graphgp_cuda_refine_logdet_64")
 
 
-
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
     if casted_args[0].dtype == jnp.float64:
@@ -55,6 +54,7 @@ def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
     else:
         return refine_logdet_p.bind(*casted_args)
 
+
 def _determine_dtype(*args):
     for x in args:
         if x.dtype in (jnp.int64, jnp.float64):
@@ -71,6 +71,7 @@ def _cast_all(*args):
         else:
             casted_args.append(x.astype(float_dtype))
     return tuple(casted_args)
+
 
 def initialize():
     try:
@@ -99,12 +100,12 @@ def initialize():
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi",
             jax.ffi.pycapsule(getattr(lib, f"{name}_ffi")),
-            platform="gpu",
+            platform="CUDA",
         )
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi_64",
             jax.ffi.pycapsule(getattr(lib, f"{name}_ffi_64")),
-            platform="gpu",
+            platform="CUDA",
         )
 
     # Define abstract evaluations, these essentially serve as the definitions of the FFI functions in Python
@@ -215,7 +216,7 @@ def initialize():
         "graphgp_cuda_refine_jvp_ffi",
         refine_jvp_abstract_eval,
         batch_args=(4, 5, 6, 7, 8, 9),
-        transpose_prim=refine_vjp_p,
+        transpose_prim=None, # TODO: refine_vjp_p, but need to handle values correctly!
         n_nonlinear=7,
         n_transpose_buffer=1,
         platform="gpu",
@@ -253,7 +254,7 @@ def initialize():
         platform="gpu",
     )
 
-    # Set up 64 bit versions
+    # ==================== Set up 64 bit versions ====================
     setup_ffi_primitive(
         refine_p_64,
         "graphgp_cuda_refine_ffi_64",
@@ -284,7 +285,7 @@ def initialize():
         "graphgp_cuda_refine_jvp_ffi_64",
         Partial(refine_jvp_abstract_eval, dtype=jnp.float64),
         batch_args=(4, 5, 6, 7, 8, 9),
-        transpose_prim=refine_vjp_p_64,
+        transpose_prim=None, # TODO: refine_vjp_p_64, but need to handle values correctly!
         n_nonlinear=7,
         n_transpose_buffer=1,
         platform="gpu",
@@ -470,18 +471,26 @@ def make_batching_rule(prim, batch_args):
 # Assumes all nonlinear args first, and buffers are at the end of outputs
 def make_transpose_rule(transpose_prim, *, n_nonlinear=0, n_buffer=0, n_transpose_buffer=0):
     def transpose_rule(tangents_out, *primals):
+        if transpose_prim is None:
+            raise NotImplementedError("Transpose rule not provided for this set of arguments.")
         if any(ad.is_undefined_primal(t) for t in primals[:n_nonlinear]):
             raise ValueError("Transposition only valid for linear arguments.")
-        if not all(ad.is_undefined_primal(t) for t in primals[n_nonlinear:]):
-            raise ValueError("Not all linear arguments were undefined primals?")
+        # if not all(ad.is_undefined_primal(t) for t in primals[n_nonlinear:]):
+        #     raise ValueError("Not all linear arguments were undefined primals?")
         if type(tangents_out) is list:  # TODO: why is this a list?
             tangents_out = tuple(tangents_out)
         if type(tangents_out) is not tuple:
             tangents_out = (tangents_out,)
         if all(type(t) is ad.Zero for t in tangents_out):
             return (ad.Zero,) * len(primals) if len(primals) > 1 else ad.Zero
-        if any(type(t) is ad.Zero for t in tangents_out):
-            raise NotImplementedError("Output tangents were mix of Zero and non-Zero.")
+        if any(type(t) is ad.Zero for t in tangents_out[: len(tangents_out) - n_buffer]):
+            tangents_out = tuple(
+                tan if type(tan) is not ad.Zero else jnp.zeros_like(primal)
+                for primal, tan in zip(primals, tangents_out)
+            )
+            # print(tangents_out)
+            # raise NotImplementedError("Output tangents were mix of Zero and non-Zero.")
+            # TODO: this can arise in jacrev, easy to handle
         tangents_in = transpose_prim.bind(
             *primals[:n_nonlinear], *tangents_out[: len(tangents_out) - n_buffer]
         )
@@ -489,9 +498,12 @@ def make_transpose_rule(transpose_prim, *, n_nonlinear=0, n_buffer=0, n_transpos
             tangents_in = tuple(tangents_in)
         if type(tangents_in) is not tuple:
             tangents_in = (tangents_in,)
-        tangents_in = (None,) * n_nonlinear + tangents_in[
-            : len(tangents_in) - n_transpose_buffer
-        ]  # TODO: convert back to scalar if single output?
+        tangents_in = (None,) * n_nonlinear + tangents_in[: len(tangents_in) - n_transpose_buffer]
+        tangents_in = tuple(
+            tangents_in[i] if ad.is_undefined_primal(primals[i]) else None
+            for i in range(len(primals))
+        )
+        # TODO: convert back to scalar if single output?
         return tangents_in
 
     return transpose_rule
@@ -510,7 +522,7 @@ def make_jvp_rule(prim, jvp_prim, *, n_nonlinear=0, n_linearized=0):
         # linear case
         if all(type(t) is ad.Zero for t in tangents[:n_nonlinear]):
             tangents = tuple(
-                tan if type(tan) is not ad.Zero else lax.zeros_like_array(primal)
+                tan if type(tan) is not ad.Zero else jnp.zeros_like(primal)
                 for primal, tan in zip(primals[n_nonlinear:], tangents[n_nonlinear:])
             )
             tangents_out = prim.bind(*primals[:n_nonlinear], *tangents)
@@ -528,7 +540,7 @@ def make_jvp_rule(prim, jvp_prim, *, n_nonlinear=0, n_linearized=0):
             if jvp_prim is None:
                 raise NotImplementedError("JVP rule not provided for this set of arguments.")
             tangents = tuple(
-                tan if type(tan) is not ad.Zero else lax.zeros_like_array(primal)
+                tan if type(tan) is not ad.Zero else jnp.zeros_like(primal)
                 for primal, tan in zip(primals[n_fixed:], tangents[n_fixed:])
             )
             _, tangents_out = jvp_prim.bind(
@@ -570,7 +582,5 @@ def setup_ffi_primitive(
     ad.primitive_jvps[prim] = make_jvp_rule(
         prim, jvp_prim, n_nonlinear=n_nonlinear, n_linearized=n_linearized
     )
-    mlir.register_lowering(
-        prim, jax.ffi.ffi_lowering(ffi_name), platform=platform
-    )
+    mlir.register_lowering(prim, jax.ffi.ffi_lowering(ffi_name), platform=platform)
     return prim, prim.bind

@@ -14,15 +14,18 @@
 // limitations under the License.                                           //
 // ======================================================================== //
 
-// Rewritten to include up to 4-key sort and be easier to modify.
-// Doesn't seem to be substantially slower than inlining everything and without syncthreads below 32.
+// ======================================================================== //
+// This file has been heavily modified from the original as found in the    //
+// "cubit" library (https://github.com/ingowald/cudaBitonic). Inline        //
+// comparisons have been eliminated for ease of modification, and support   //
+// for multiple key sorts has been added.                                   //
+// ======================================================================== //
 
 // sort.h
 #pragma once
 
 #include <cuda_runtime.h>
 #include "common.h"
-#include "cubit/cubit.h"
 
 template<typename T>
 inline __device__ T max_value();
