@@ -1,12 +1,9 @@
 import jax
-
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
 from jax.tree_util import Partial
-
 import pytest
-
 import graphgp as gp
 
 rng = jr.key(99)
@@ -255,16 +252,22 @@ def test_full_adjoint(setup_graph):
         f"Full adjoint test failed: {val1:.5e} != {val2:.5e} within rtol=1e-12"
     )
 
+
 def test_inverse(setup_graph):
     graph, covariance, points = setup_graph
     xi = jr.normal(rng, (graph.points.shape[0],))
     values = gp.generate(graph, covariance, xi, cuda=True)
     xi_back = gp.generate_inv(graph, covariance, values, cuda=True)
     values_back = gp.generate(graph, covariance, xi_back, cuda=True)
-    assert jnp.allclose(values, values_back, rtol=1e-12), "Values from xi and inverted xi do not match."
+    assert jnp.allclose(values, values_back, rtol=1e-12), (
+        "Values from xi and inverted xi do not match."
+    )
+
 
 def test_logdet(setup_graph):
     graph, covariance, points = setup_graph
     logdet1 = gp.generate_logdet(graph, covariance, cuda=True)
     logdet2 = gp.generate_logdet(graph, covariance, cuda=False)
-    assert jnp.isclose(logdet1, logdet2, rtol=1e-12), "Log-determinants from JAX and CUDA do not match."
+    assert jnp.isclose(logdet1, logdet2, rtol=1e-12), (
+        "Log-determinants from JAX and CUDA do not match."
+    )

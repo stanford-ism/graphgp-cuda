@@ -13,7 +13,7 @@ execute_process(
 message(STATUS "XLA include directory: ${XLA_DIR}")
 
 # Set CUDA architecture
-set(CMAKE_CUDA_ARCHITECTURES 80 89 90) # A100=80 RTX4050=89 H100=90
+set(CMAKE_CUDA_ARCHITECTURES 80;89;90) # A100=80 RTX4050=89 H100=90
 
 # Add the shared library target
 add_library(${SKBUILD_PROJECT_NAME} SHARED ${CMAKE_CURRENT_SOURCE_DIR}/${SKBUILD_PROJECT_NAME}/xla_bindings.cu)

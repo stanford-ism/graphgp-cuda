@@ -225,9 +225,9 @@ __global__ void refine_jvp_kernel(
     const f_t* cov_bins, // (R,)
     const f_t* cov_vals, // (B, R)
     const f_t* xi, // (B, R)
+    const f_t* values, // (B, R)
     const f_t* cov_vals_tangent, // (B, R)
     const f_t* xi_tangent, // (B, R)
-    f_t* values, // (B, R)
     f_t* values_tangent, // (B, R)
     size_t n0,
     size_t k,
@@ -249,7 +249,7 @@ __global__ void refine_jvp_kernel(
     const f_t *b_xi = xi + b * (n_points - n0);
     const f_t *b_cov_vals_tangent = cov_vals_tangent + b * n_cov;
     const f_t *b_xi_tangent = xi_tangent + b * (n_points - n0);
-    f_t *b_values = values + b * n_points;
+    const f_t *b_values = values + b * n_points;
     f_t *b_values_tangent = values_tangent + b * n_points;
 
     // define working variables, these should fit on register
@@ -285,7 +285,7 @@ __global__ void refine_jvp_kernel(
     // compute values and linear jvp
     solve_cholesky_forward(mat, vec, k, 1);
     solve_cholesky_forward(mat, vec_tangent, k, 1);
-    b_values[idx] = dot(mat + tri(k, 0), vec, k + 1);
+    // b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // don't write values, we assume they are given
     b_values_tangent[idx] = dot(mat + tri(k, 0), vec_tangent, k + 1);
 
     // nonlinear from dot product
@@ -307,12 +307,11 @@ __host__ void refine_jvp(
     const i_t* offsets,
     const f_t* cov_bins,
     const f_t* cov_vals,
-    const f_t* initial_values,
     const f_t* xi,
+    const f_t* values,
     const f_t* cov_vals_tangent,
     const f_t* initial_values_tangent,
     const f_t* xi_tangent,
-    f_t* values,
     f_t* values_tangent,
     size_t n0,
     size_t k,
@@ -322,7 +321,7 @@ __host__ void refine_jvp(
     size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
 ) {
     // copy initial values to output values
-    batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values, values, n_batches, n0, n_points, n0);
+    // batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values, values, n_batches, n0, n_points, n0); // don't copy any values, we assume they are given
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values_tangent, values_tangent, n_batches, n0, n_points, n0);
 
     // iteratively refine levels
@@ -338,9 +337,9 @@ __host__ void refine_jvp(
             cov_bins,
             cov_vals,
             xi,
+            values,
             cov_vals_tangent,
             xi_tangent,
-            values,
             values_tangent,
             n0,
             k,
@@ -442,7 +441,6 @@ __host__ void refine_vjp(
     const i_t* offsets,
     const f_t* cov_bins,
     const f_t* cov_vals,
-    const f_t* initial_values,
     const f_t* xi,
     const f_t* values,
     const f_t* values_tangent,

@@ -1,13 +1,13 @@
 [project]
 name = "graphgp-cuda"
-version = "0.0.1"
+version = "0.0.2"
 description = "Custom CUDA extension for GraphGP package."
 authors = [
     {name="Benjamin Dodge", email="bendodge@stanford.edu"},
     {name="Philipp Frank", email="phfrank@stanford.edu"}
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "jax"
 ]

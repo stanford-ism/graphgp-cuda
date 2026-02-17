@@ -122,7 +122,7 @@ Error refine_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_ffi, refine_ffi_impl,
+    refine_ffi_32, refine_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -188,7 +188,7 @@ Error refine_transpose_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_transpose_ffi, refine_transpose_ffi_impl,
+    refine_transpose_ffi_32, refine_transpose_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -213,10 +213,10 @@ Error refine_jvp_ffi_impl(
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
+    Buffer<F32> values, // (B1, B2, ..., N)
     Buffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
     Buffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
-    ResultBuffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> values_tangent
 ) {
     size_t n_points = points.dimensions()[0];
@@ -242,12 +242,11 @@ Error refine_jvp_ffi_impl(
         offsets.typed_data(),
         cov_bins.typed_data(),
         cov_vals.typed_data(),
-        initial_values.typed_data(),
         xi.typed_data(),
+        values.typed_data(),
         cov_vals_tangent.typed_data(),
         initial_values_tangent.typed_data(),
         xi_tangent.typed_data(),
-        values->typed_data(),
         values_tangent->typed_data(),
         n0,
         k,
@@ -261,7 +260,7 @@ Error refine_jvp_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_jvp_ffi, refine_jvp_ffi_impl,
+    refine_jvp_ffi_32, refine_jvp_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -271,10 +270,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // cov_vals
         .Arg<Buffer<F32>>() // initial_values
         .Arg<Buffer<F32>>() // xi
+        .Arg<Buffer<F32>>() // values
         .Arg<Buffer<F32>>() // cov_vals_tangent
         .Arg<Buffer<F32>>() // initial_values_tangent
         .Arg<Buffer<F32>>() // xi_tangent
-        .Ret<Buffer<F32>>() // values
         .Ret<Buffer<F32>>() // values_tangent
 );
 
@@ -319,7 +318,6 @@ Error refine_vjp_ffi_impl(
         offsets.typed_data(),
         cov_bins.typed_data(),
         cov_vals.typed_data(),
-        initial_values.typed_data(),
         xi.typed_data(),
         values.typed_data(),
         values_tangent.typed_data(),
@@ -339,7 +337,7 @@ Error refine_vjp_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_vjp_ffi, refine_vjp_ffi_impl,
+    refine_vjp_ffi_32, refine_vjp_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -408,7 +406,7 @@ Error refine_inv_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_inv_ffi, refine_inv_ffi_impl,
+    refine_inv_ffi_32, refine_inv_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -468,7 +466,7 @@ Error refine_logdet_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    refine_logdet_ffi, refine_logdet_ffi_impl,
+    refine_logdet_ffi_32, refine_logdet_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -508,7 +506,7 @@ Error build_tree_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    build_tree_ffi, build_tree_ffi_impl,
+    build_tree_ffi_32, build_tree_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points_in
@@ -551,7 +549,7 @@ Error query_neighbors_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    query_neighbors_ffi, query_neighbors_ffi_impl,
+    query_neighbors_ffi_32, query_neighbors_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -589,7 +587,7 @@ Error query_preceding_neighbors_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    query_preceding_neighbors_ffi, query_preceding_neighbors_ffi_impl,
+    query_preceding_neighbors_ffi_32, query_preceding_neighbors_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points
@@ -613,7 +611,7 @@ Error compute_depths_parallel_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    compute_depths_parallel_ffi, compute_depths_parallel_ffi_impl,
+    compute_depths_parallel_ffi_32, compute_depths_parallel_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<S32>>() // neighbors
@@ -663,7 +661,7 @@ Error order_by_depth_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    order_by_depth_ffi, order_by_depth_ffi_impl,
+    order_by_depth_ffi_32, order_by_depth_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>() // points_in
@@ -727,7 +725,7 @@ Error build_graph_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    build_graph_ffi, build_graph_ffi_impl,
+    build_graph_ffi_32, build_graph_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>()  // points_in
@@ -752,7 +750,7 @@ Error sort_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    sort_ffi, sort_ffi_impl,
+    sort_ffi_32, sort_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>()  // keys_in
@@ -777,7 +775,7 @@ Error sort_three_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    sort_three_ffi, sort_three_ffi_impl,
+    sort_three_ffi_32, sort_three_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>()  // keys1_in
@@ -809,7 +807,7 @@ Error sort_four_ffi_impl(
 }
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    sort_four_ffi, sort_four_ffi_impl,
+    sort_four_ffi_32, sort_four_ffi_impl,
     Ffi::Bind()
         .Ctx<PlatformStream<cudaStream_t>>()
         .Arg<Buffer<F32>>()  // keys1_in
@@ -996,7 +994,6 @@ Error refine_jvp_ffi_impl_64(
         offsets.typed_data(),
         cov_bins.typed_data(),
         cov_vals.typed_data(),
-        initial_values.typed_data(),
         xi.typed_data(),
         cov_vals_tangent.typed_data(),
         initial_values_tangent.typed_data(),
@@ -1025,10 +1022,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // cov_vals
         .Arg<Buffer<F64>>() // initial_values
         .Arg<Buffer<F64>>() // xi
+        .Arg<Buffer<F64>>() // values
         .Arg<Buffer<F64>>() // cov_vals_tangent
         .Arg<Buffer<F64>>() // initial_values_tangent
         .Arg<Buffer<F64>>() // xi_tangent
-        .Ret<Buffer<F64>>() // values
         .Ret<Buffer<F64>>() // values_tangent
 );
 
@@ -1073,7 +1070,6 @@ Error refine_vjp_ffi_impl_64(
         offsets.typed_data(),
         cov_bins.typed_data(),
         cov_vals.typed_data(),
-        initial_values.typed_data(),
         xi.typed_data(),
         values.typed_data(),
         values_tangent.typed_data(),
