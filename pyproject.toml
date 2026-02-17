@@ -9,12 +9,12 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "jax"
+    "jax[cuda12]"
 ]
 
 [project.optional-dependencies]
 dev = [
-    "jax[cuda12]==0.8.0",
+    "jax[cuda12]==0.9.0",
     "pytest>=8.3.5",
     "ruff>=0.11.11",
 ]

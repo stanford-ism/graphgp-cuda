@@ -487,8 +487,6 @@ def setup_ffi_primitive(
     *,
     batch_args=None,
     transpose_prim=None,
-    jvp_prim=None,
-    n_linearized=0,
     n_nonlinear=0,
     n_buffer=0,
     n_transpose_buffer=0,
@@ -505,8 +503,5 @@ def setup_ffi_primitive(
             n_buffer=n_buffer,
             n_transpose_buffer=n_transpose_buffer,
         )
-    # ad.primitive_jvps[prim] = make_jvp_rule(
-    #     prim, jvp_prim, n_nonlinear=n_nonlinear, n_linearized=n_linearized
-    # )
     mlir.register_lowering(prim, jax.ffi.ffi_lowering(ffi_name), platform=platform)
     return prim, prim.bind
