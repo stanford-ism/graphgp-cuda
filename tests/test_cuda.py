@@ -1,4 +1,5 @@
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
@@ -21,9 +22,7 @@ def setup_graph():
 
     points = jr.normal(rng, (n_points, n_dim))
     graph = gp.build_graph(points, n0=n0, k=k, cuda=True)
-    covariance = gp.extras.matern_kernel(
-        p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000, jitter=1e-5
-    )
+    covariance = gp.extras.matern_kernel(p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000, jitter=1e-5)
 
     yield graph, covariance, points
 
@@ -76,9 +75,28 @@ def test_xi_vjp(setup_graph):
     cuda_vjp_result = cuda_vjp[1](v)[0]
 
     assert jnp.allclose(jax_vjp[0], cuda_vjp[0], rtol=1e-12), "JAX and CUDA forward do not match."
-    assert jnp.allclose(jax_vjp_result, cuda_vjp_result, rtol=1e-12), (
-        "JAX and CUDA xi VJP do not match."
-    )
+    assert jnp.allclose(jax_vjp_result, cuda_vjp_result, rtol=1e-12), "JAX and CUDA xi VJP do not match."
+
+
+def test_xi_hess():
+    n_points = 100
+    n_dim = 3
+    n0 = 10
+    k = 4
+
+    points = jr.normal(rng, (n_points, n_dim))
+    graph = gp.build_graph(points, n0=n0, k=k, cuda=True)
+    covariance = gp.extras.matern_kernel(p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000, jitter=1e-5)
+    xi = jr.normal(rng, (points.shape[0],))
+
+    jax_hess = jax.hessian(
+        Partial(gp.generate, graph, covariance, cuda=False),
+    )(xi)
+    cuda_hess = jax.hessian(
+        Partial(gp.generate, graph, covariance, cuda=True),
+    )(xi)
+
+    assert jnp.allclose(jax_hess, cuda_hess, rtol=1e-12), "JAX and CUDA xi Hessian do not match."
 
 
 def test_full_jvp(setup_graph):
@@ -127,9 +145,7 @@ def test_full_vjp(setup_graph):
     cuda_vjp_result = cuda_vjp[1](v)
 
     assert jnp.allclose(jax_vjp[0], cuda_vjp[0], rtol=1e-12), "JAX and CUDA forward do not match."
-    assert jnp.allclose(jax_vjp_result[0], cuda_vjp_result[0], rtol=1e-12), (
-        "JAX and CUDA full VJP do not match for xi."
-    )
+    assert jnp.allclose(jax_vjp_result[0], cuda_vjp_result[0], rtol=1e-12), "JAX and CUDA full VJP do not match for xi."
     assert jnp.allclose(jax_vjp_result[1], cuda_vjp_result[1], rtol=1e-12), (
         "JAX and CUDA full VJP do not match for cov."
     )
@@ -179,9 +195,7 @@ def test_cov_vjp(setup_graph):
     cuda_vjp_result = cuda_vjp[1](v)[0]
 
     assert jnp.allclose(jax_vjp[0], cuda_vjp[0], rtol=1e-12), "JAX and CUDA forward do not match."
-    assert jnp.allclose(jax_vjp_result, cuda_vjp_result, rtol=1e-12), (
-        "JAX and CUDA cov VJP do not match."
-    )
+    assert jnp.allclose(jax_vjp_result, cuda_vjp_result, rtol=1e-12), "JAX and CUDA cov VJP do not match."
 
 
 def test_vmap(setup_graph):
@@ -224,9 +238,7 @@ def test_xi_adjoint(setup_graph):
 
     val1 = jnp.dot(values_tangent, jax.jvp(func, (xi,), (xi_tangent,))[1])
     val2 = jnp.dot(xi_tangent, jax.vjp(func, xi)[1](values_tangent)[0])
-    assert jnp.isclose(val1, val2, rtol=1e-12), (
-        f"Adjoint test failed: {val1:.5e} != {val2:.5e} within rtol=1e-12"
-    )
+    assert jnp.isclose(val1, val2, rtol=1e-12), f"Adjoint test failed: {val1:.5e} != {val2:.5e} within rtol=1e-12"
 
 
 def test_full_adjoint(setup_graph):
@@ -248,9 +260,7 @@ def test_full_adjoint(setup_graph):
     )
     vjp_result = jax.vjp(forward, xi, cov_vals)[1](values_tangent)
     val2 = jnp.dot(xi_tangent, vjp_result[0]) + jnp.dot(cov_tangent, vjp_result[1])
-    assert jnp.isclose(val1, val2, rtol=1e-12), (
-        f"Full adjoint test failed: {val1:.5e} != {val2:.5e} within rtol=1e-12"
-    )
+    assert jnp.isclose(val1, val2, rtol=1e-12), f"Full adjoint test failed: {val1:.5e} != {val2:.5e} within rtol=1e-12"
 
 
 def test_inverse(setup_graph):
@@ -259,15 +269,11 @@ def test_inverse(setup_graph):
     values = gp.generate(graph, covariance, xi, cuda=True)
     xi_back = gp.generate_inv(graph, covariance, values, cuda=True)
     values_back = gp.generate(graph, covariance, xi_back, cuda=True)
-    assert jnp.allclose(values, values_back, rtol=1e-12), (
-        "Values from xi and inverted xi do not match."
-    )
+    assert jnp.allclose(values, values_back, rtol=1e-12), "Values from xi and inverted xi do not match."
 
 
 def test_logdet(setup_graph):
     graph, covariance, points = setup_graph
     logdet1 = gp.generate_logdet(graph, covariance, cuda=True)
     logdet2 = gp.generate_logdet(graph, covariance, cuda=False)
-    assert jnp.isclose(logdet1, logdet2, rtol=1e-12), (
-        "Log-determinants from JAX and CUDA do not match."
-    )
+    assert jnp.isclose(logdet1, logdet2, rtol=1e-12), "Log-determinants from JAX and CUDA do not match."
