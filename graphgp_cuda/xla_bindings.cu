@@ -965,10 +965,10 @@ Error refine_jvp_ffi_impl_64(
     Buffer<F64> cov_vals, // (B1, B2, ..., R)
     Buffer<F64> initial_values, // (B1, B2, ..., n0)
     Buffer<F64> xi, // (B1, B2, ..., N - n0)
+    Buffer<F64> values, // (B1, B2, ..., N)
     Buffer<F64> cov_vals_tangent, // (B1, B2, ..., R)
     Buffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
-    ResultBuffer<F64> values, // (B1, B2, ..., N)
     ResultBuffer<F64> values_tangent
 ) {
     size_t n_points = points.dimensions()[0];
@@ -995,10 +995,10 @@ Error refine_jvp_ffi_impl_64(
         cov_bins.typed_data(),
         cov_vals.typed_data(),
         xi.typed_data(),
+        values.typed_data(),
         cov_vals_tangent.typed_data(),
         initial_values_tangent.typed_data(),
         xi_tangent.typed_data(),
-        values->typed_data(),
         values_tangent->typed_data(),
         n0,
         k,

@@ -111,26 +111,97 @@ def initialize():
     for mode in ["32", "64"]:
         dtype = jnp.float32 if mode == "32" else jnp.float64
 
-        # Refine forward pass
-        def refine_abstract(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
-            n = points.shape[0]
-            batch_shape = initial_values.shape[:-1]
-            return (ShapedArray(batch_shape + (n,), dtype),)
+        setup_ffi_primitive(
+            refine_transpose_p[mode],
+            f"graphgp_cuda_refine_transpose_ffi_{mode}",
+            Partial(
+                refine_transpose_abstract_eval, dtype=jnp.float32 if mode == "32" else jnp.float64
+            ),
+            batch_args=(4, 5),
+            transpose_prim=refine_p[mode],
+            n_nonlinear=5,
+            n_buffer=1,
+            platform="gpu",
+        )
+        refine_transpose_p[mode].multiple_results = True
 
-        # Refine JVP rule
-        def refine_value_and_jvp(primals, tangents):
-            primals_out = refine_p[mode].bind(*primals)
+        setup_ffi_primitive(
+            refine_jvp_p[mode],
+            f"graphgp_cuda_refine_jvp_ffi_{mode}",
+            Partial(refine_jvp_abstract_eval, dtype=jnp.float32 if mode == "32" else jnp.float64),
+            batch_args=(4, 5, 6, 7, 8, 9, 10),
+            transpose_prim=refine_vjp_p[mode],
+            n_nonlinear=8,
+            n_transpose_buffer=1,
+            platform="gpu",
+        )
+
+        setup_ffi_primitive(
+            refine_vjp_p[mode],
+            f"graphgp_cuda_refine_vjp_ffi_{mode}",
+            Partial(refine_vjp_abstract_eval, dtype=jnp.float32 if mode == "32" else jnp.float64),
+            batch_args=(4, 5, 6, 7, 8),
+            transpose_prim=refine_jvp_p[mode],
+            n_nonlinear=8,
+            n_buffer=1,
+            platform="gpu",
+        )
+        refine_vjp_p[mode].multiple_results = True
+
+        setup_ffi_primitive(
+            refine_inv_p[mode],
+            f"graphgp_cuda_refine_inv_ffi_{mode}",
+            Partial(refine_inv_abstract_eval, dtype=jnp.float32 if mode == "32" else jnp.float64),
+            batch_args=(4, 5),
+            n_nonlinear=5,
+            platform="gpu",
+        )
+        refine_inv_p[mode].multiple_results = True
+
+        setup_ffi_primitive(
+            refine_logdet_p[mode],
+            f"graphgp_cuda_refine_logdet_ffi_{mode}",
+            Partial(
+                refine_logdet_abstract_eval, dtype=jnp.float32 if mode == "32" else jnp.float64
+            ),
+            batch_args=(4,),
+            n_nonlinear=5,
+            platform="gpu",
+        )
+
+        def refine_jvp_rule(primals, tangents, captured_mode=mode):
+            n_nonlinear = 5
+            n_linearized = 1
+
+            primals_out = refine_p[captured_mode].bind(*primals)
 
             if all(isinstance(t, ad.Zero) for t in tangents[:5]):  # linear case
                 filled_tangents = tuple(ad.instantiate_zeros(t) for t in tangents[5:])
                 tangents_out = refine_p[mode].bind(*primals[:5], *filled_tangents)
 
-            elif all(isinstance(t, ad.Zero) for t in tangents[:4]):  # covariance derivative
-                filled_tangents = tuple(ad.instantiate_zeros(t) for t in tangents[4:])
-                tangents_out = refine_jvp_p[mode].bind(*primals, primals_out[0], *filled_tangents)
+            # linear case
+            if all(type(t) is ad.Zero for t in tangents[:n_nonlinear]):
+                tangents_linear = tuple(
+                    tan if type(tan) is not ad.Zero else jnp.zeros_like(primal)
+                    for primal, tan in zip(primals[n_nonlinear:], tangents[n_nonlinear:])
+                )
+                tangents_out = refine_p[captured_mode].bind(*primals[:n_nonlinear], *tangents_linear)
+
+            # nonlinear case
             else:
-                nonzero_tangents = tuple(i for i, t in enumerate(tangents) if not isinstance(t, ad.Zero))
-                raise NotImplementedError(f"JVP not supported for non-Zero tangents {nonzero_tangents}.")
+                n_fixed = n_nonlinear - n_linearized
+                if not all(type(t) is ad.Zero for t in tangents[:n_fixed]):
+                    bad_args = tuple(
+                        j for j, t in enumerate(tangents) if j < n_fixed and type(t) is not ad.Zero
+                    )
+                    raise NotImplementedError(
+                        f"Differentiation not supported for arguments {bad_args}."
+                    )
+                tangents_linear = tuple(
+                    tan if type(tan) is not ad.Zero else jnp.zeros_like(primal)
+                    for primal, tan in zip(primals[n_fixed:], tangents[n_fixed:])
+                )
+                tangents_out = refine_jvp_p[captured_mode].bind(*primals, primals_out, *tangents_linear)
 
             return primals_out, tangents_out
 
