@@ -1,6 +1,6 @@
 [project]
 name = "graphgp-cuda"
-version = "0.0.2"
+version = "0.0.3"
 description = "Custom CUDA extension for GraphGP package."
 authors = [
     {name="Benjamin Dodge", email="bendodge@stanford.edu"},
