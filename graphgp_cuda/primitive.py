@@ -8,6 +8,9 @@ from jax.extend.core import Primitive
 from jax.interpreters import mlir, batching, ad
 from jax.tree_util import Partial
 
+# JAX dropped the public `batching.not_mapped` sentinel; the "not mapped" bdim is now `None`.
+NOT_MAPPED = getattr(batching, "not_mapped", None)
+
 refine_p = {"32": Primitive("graphgp_cuda_refine_32"), "64": Primitive("graphgp_cuda_refine_64")}
 refine_transpose_p = {
     "32": Primitive("graphgp_cuda_refine_transpose_32"),
@@ -333,14 +336,14 @@ def make_batching_rule(prim, batch_args):
 
     def batching_rule(vector_args, batch_axes):
         bad_batch_args = tuple(
-            j for j, bd in enumerate(batch_axes) if j not in batch_args and bd is not batching.not_mapped
+            j for j, bd in enumerate(batch_axes) if j not in batch_args and bd is not NOT_MAPPED
         )
         if len(bad_batch_args) > 0:
             raise NotImplementedError(f"Batching {prim} not supported for arguments {bad_batch_args}.")
-        (size,) = {x.shape[bd] for x, bd in zip(vector_args, batch_axes) if bd is not batching.not_mapped}
+        (size,) = {x.shape[bd] for x, bd in zip(vector_args, batch_axes) if bd is not NOT_MAPPED}
         args = []
         for j, (x, bd) in enumerate(zip(vector_args, batch_axes)):
-            if bd is batching.not_mapped:
+            if bd is NOT_MAPPED:
                 if j in batch_args:
                     args.append(jnp.broadcast_to(x, (size,) + x.shape))
                 else:
