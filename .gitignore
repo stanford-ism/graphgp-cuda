@@ -2,3 +2,12 @@ __pycache__/
 build/
 .vscode/
 old/
+
+# Local Python/build artifacts
+*.whl
+*.bak
+build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/

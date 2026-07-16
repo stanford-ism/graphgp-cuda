@@ -260,3 +260,86 @@ def test_logdet(setup_graph):
     assert jnp.isclose(logdet1, logdet2, rtol=_rtol(points.dtype), atol=_atol(points.dtype)), (
         "Log-determinants from JAX and CUDA do not match."
     )
+
+
+@pytest.fixture(params=[jnp.float32, jnp.float64], ids=["vec_f32", "vec_f64"])
+def setup_vector_graph(request):
+    dtype = request.param
+    with jax.enable_x64(dtype == jnp.float64):
+        n_side = 8
+        xs = (jnp.arange(n_side, dtype=dtype) + dtype(0.5)) / dtype(n_side)
+        X, Y, Z = jnp.meshgrid(xs, xs, xs, indexing="ij")
+        points = jnp.stack([X, Y, Z], axis=-1).reshape((-1, 3)).astype(dtype)
+        graph = gp.build_graph(points, n0=64, k=8, cuda=True)
+        cov_elem = gp.extras.make_div_free_rbf_covariance(ell=0.18, sigma2=1.0, periodic=True)
+        yield graph, cov_elem, points
+
+
+def test_vector_forward(setup_vector_graph):
+    graph, cov_elem, points = setup_vector_graph
+    dtype = points.dtype
+    xi = jr.normal(rng, (points.shape[0], 3)).astype(dtype)
+
+    jax_values = gp.generate_vector(graph, cov_elem, xi, cuda=False)
+    cuda_values = gp.generate_vector(graph, cov_elem, xi, cuda=True)
+
+    assert jnp.allclose(jax_values, cuda_values, rtol=_rtol(dtype), atol=_atol(dtype)), (
+        "JAX and CUDA vector forward do not match."
+    )
+
+
+def test_vector_inverse(setup_vector_graph):
+    graph, cov_elem, points = setup_vector_graph
+    dtype = points.dtype
+    xi = jr.normal(rng, (points.shape[0], 3)).astype(dtype)
+
+    values = gp.generate_vector(graph, cov_elem, xi, cuda=True)
+    xi_back = gp.generate_vector_inv(graph, cov_elem, values, cuda=True)
+    values_back = gp.generate_vector(graph, cov_elem, xi_back, cuda=True)
+
+    assert jnp.allclose(values, values_back, rtol=_rtol(dtype), atol=_atol(dtype)), (
+        "Vector values from xi and inverted xi do not match."
+    )
+
+
+def test_vector_logdet(setup_vector_graph):
+    graph, cov_elem, points = setup_vector_graph
+    dtype = points.dtype
+
+    logdet_cuda = gp.generate_vector_logdet(graph, cov_elem, cuda=True)
+    logdet_jax = gp.generate_vector_logdet(graph, cov_elem, cuda=False)
+
+    assert jnp.isclose(logdet_cuda, logdet_jax, rtol=_rtol(dtype), atol=_atol(dtype)), (
+        "JAX and CUDA vector log-determinants do not match."
+    )
+
+
+def test_vector_vmap_xi(setup_vector_graph):
+    graph, cov_elem, points = setup_vector_graph
+    dtype = points.dtype
+    n_samples = 3
+    xi = jr.normal(rng, (n_samples, points.shape[0], 3)).astype(dtype)
+
+    jax_values = jax.vmap(Partial(gp.generate_vector, graph, cov_elem, cuda=False))(xi)
+    cuda_values = jax.vmap(Partial(gp.generate_vector, graph, cov_elem, cuda=True))(xi)
+
+    assert jnp.allclose(jax_values, cuda_values, rtol=_rtol(dtype), atol=_atol(dtype)), (
+        "JAX and CUDA vector vmap do not match."
+    )
+
+
+def test_vector_xi_adjoint(setup_vector_graph):
+    graph, cov_elem, points = setup_vector_graph
+    dtype = points.dtype
+    k1, k2, k3 = jr.split(rng, 3)
+    xi = jr.normal(k1, (points.shape[0], 3)).astype(dtype)
+    xi_tangent = jr.normal(k2, (points.shape[0], 3)).astype(dtype)
+    values_tangent = jr.normal(k3, (points.shape[0], 3)).astype(dtype)
+
+    func = Partial(gp.generate_vector, graph, cov_elem, cuda=True)
+    val1 = jnp.vdot(values_tangent, jax.jvp(func, (xi,), (xi_tangent,))[1])
+    val2 = jnp.vdot(xi_tangent, jax.vjp(func, xi)[1](values_tangent)[0])
+
+    assert jnp.isclose(val1, val2, rtol=_rtol(dtype), atol=_atol(dtype)), (
+        f"Vector adjoint test failed: {val1:.5e} != {val2:.5e}."
+    )

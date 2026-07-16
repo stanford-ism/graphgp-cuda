@@ -8,9 +8,6 @@ from jax.extend.core import Primitive
 from jax.interpreters import mlir, batching, ad
 from jax.tree_util import Partial
 
-# JAX dropped the public `batching.not_mapped` sentinel; the "not mapped" bdim is now `None`.
-NOT_MAPPED = getattr(batching, "not_mapped", None)
-
 refine_p = {"32": Primitive("graphgp_cuda_refine_32"), "64": Primitive("graphgp_cuda_refine_64")}
 refine_transpose_p = {
     "32": Primitive("graphgp_cuda_refine_transpose_32"),
@@ -31,6 +28,21 @@ refine_inv_p = {
 refine_logdet_p = {
     "32": Primitive("graphgp_cuda_refine_logdet_32"),
     "64": Primitive("graphgp_cuda_refine_logdet_64"),
+}
+
+
+refine_vector_p = {"32": Primitive("graphgp_cuda_refine_vector_32"), "64": Primitive("graphgp_cuda_refine_vector_64")}
+refine_vector_transpose_p = {
+    "32": Primitive("graphgp_cuda_refine_vector_transpose_32"),
+    "64": Primitive("graphgp_cuda_refine_vector_transpose_64"),
+}
+refine_vector_inv_p = {
+    "32": Primitive("graphgp_cuda_refine_vector_inv_32"),
+    "64": Primitive("graphgp_cuda_refine_vector_inv_64"),
+}
+refine_vector_logdet_p = {
+    "32": Primitive("graphgp_cuda_refine_vector_logdet_32"),
+    "64": Primitive("graphgp_cuda_refine_vector_logdet_64"),
 }
 
 
@@ -56,6 +68,30 @@ def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
         return refine_logdet_p["64"].bind(*casted_args)[0]
     else:
         return refine_logdet_p["32"].bind(*casted_args)[0]
+
+
+def refine_vector(points, neighbors, offsets, initial_values, xi, params):
+    casted_args = _cast_all(points, neighbors, offsets, initial_values, xi, params)
+    if casted_args[0].dtype == jnp.float64:
+        return refine_vector_p["64"].bind(*casted_args)[0]
+    else:
+        return refine_vector_p["32"].bind(*casted_args)[0]
+
+
+def refine_vector_inv(points, neighbors, offsets, values, params):
+    casted_args = _cast_all(points, neighbors, offsets, values, params)
+    if casted_args[0].dtype == jnp.float64:
+        return refine_vector_inv_p["64"].bind(*casted_args)
+    else:
+        return refine_vector_inv_p["32"].bind(*casted_args)
+
+
+def refine_vector_logdet(points, neighbors, offsets, params):
+    casted_args = _cast_all(points, neighbors, offsets, params)
+    if casted_args[0].dtype == jnp.float64:
+        return refine_vector_logdet_p["64"].bind(*casted_args)[0]
+    else:
+        return refine_vector_logdet_p["32"].bind(*casted_args)[0]
 
 
 def _determine_dtype(*args):
@@ -91,6 +127,10 @@ def initialize():
         "refine_vjp",
         "refine_inv",
         "refine_logdet",
+        "refine_vector",
+        "refine_vector_transpose",
+        "refine_vector_inv",
+        "refine_vector_logdet",
         "build_tree",
         "query_preceding_neighbors",
         "query_neighbors",
@@ -264,6 +304,89 @@ def initialize():
             platform="gpu",
         )
 
+        # Vector-valued refinement (currently 3-component div-free RBF tensor)
+        def refine_vector_abstract(points, neighbors, offsets, initial_values, xi, params):
+            n = points.shape[0]
+            if initial_values.shape[-1] != 3 or xi.shape[-1] != 3:
+                raise ValueError("CUDA vector refinement currently expects ncomp=3.")
+            batch_shape = initial_values.shape[:-2]
+            return (ShapedArray(batch_shape + (n, 3), dtype),)
+
+        def refine_vector_value_and_jvp(primals, tangents):
+            primals_out = refine_vector_p[mode].bind(*primals)
+            # The map is linear in initial_values and xi for fixed graph/covariance params.
+            if all(isinstance(t, ad.Zero) for t in (tangents[0], tangents[1], tangents[2], tangents[5])):
+                init_t = ad.instantiate_zeros(tangents[3])
+                xi_t = ad.instantiate_zeros(tangents[4])
+                tangents_out = refine_vector_p[mode].bind(
+                    primals[0], primals[1], primals[2], init_t, xi_t, primals[5]
+                )
+            else:
+                nonzero_tangents = tuple(i for i, t in enumerate(tangents) if not isinstance(t, ad.Zero))
+                raise NotImplementedError(
+                    f"Vector CUDA JVP only supports tangents for initial_values and xi; got {nonzero_tangents}."
+                )
+            return primals_out, tangents_out
+
+        register_primitive(
+            refine_vector_p[mode],
+            ffi_name=f"graphgp_cuda_refine_vector_ffi_{mode}",
+            abstract=refine_vector_abstract,
+            batch_args=(3, 4),
+            transposes=[(refine_vector_transpose_p[mode], (3, 4))],
+            jvp_rule=refine_vector_value_and_jvp,
+            platform="gpu",
+        )
+
+        def refine_vector_transpose_abstract(points, neighbors, offsets, params, values):
+            n = points.shape[0]
+            n0 = n - neighbors.shape[0]
+            if values.shape[-1] != 3:
+                raise ValueError("CUDA vector refinement transpose currently expects ncomp=3.")
+            batch_shape = values.shape[:-2]
+            return (
+                ShapedArray(batch_shape + (n0, 3), dtype),
+                ShapedArray(batch_shape + (n - n0, 3), dtype),
+                ShapedArray(batch_shape + (n, 3), dtype),
+            )
+
+        register_primitive(
+            refine_vector_transpose_p[mode],
+            ffi_name=f"graphgp_cuda_refine_vector_transpose_ffi_{mode}",
+            abstract=refine_vector_transpose_abstract,
+            batch_args=(4,),
+            platform="gpu",
+        )
+
+        def refine_vector_inv_abstract(points, neighbors, offsets, values, params):
+            n = points.shape[0]
+            n0 = n - neighbors.shape[0]
+            if values.shape[-1] != 3:
+                raise ValueError("CUDA vector inverse currently expects ncomp=3.")
+            batch_shape = values.shape[:-2]
+            return (
+                ShapedArray(batch_shape + (n0, 3), dtype),
+                ShapedArray(batch_shape + (n - n0, 3), dtype),
+            )
+
+        register_primitive(
+            refine_vector_inv_p[mode],
+            ffi_name=f"graphgp_cuda_refine_vector_inv_ffi_{mode}",
+            abstract=refine_vector_inv_abstract,
+            batch_args=(3,),
+            platform="gpu",
+        )
+
+        def refine_vector_logdet_abstract(points, neighbors, offsets, params):
+            return (ShapedArray((), dtype),)
+
+        register_primitive(
+            refine_vector_logdet_p[mode],
+            ffi_name=f"graphgp_cuda_refine_vector_logdet_ffi_{mode}",
+            abstract=refine_vector_logdet_abstract,
+            platform="gpu",
+        )
+
     for mode in ["32", "64"]:
         _register_for_mode(mode)
 
@@ -336,14 +459,14 @@ def make_batching_rule(prim, batch_args):
 
     def batching_rule(vector_args, batch_axes):
         bad_batch_args = tuple(
-            j for j, bd in enumerate(batch_axes) if j not in batch_args and bd is not NOT_MAPPED
+            j for j, bd in enumerate(batch_axes) if j not in batch_args and bd is not batching.not_mapped
         )
         if len(bad_batch_args) > 0:
             raise NotImplementedError(f"Batching {prim} not supported for arguments {bad_batch_args}.")
-        (size,) = {x.shape[bd] for x, bd in zip(vector_args, batch_axes) if bd is not NOT_MAPPED}
+        (size,) = {x.shape[bd] for x, bd in zip(vector_args, batch_axes) if bd is not batching.not_mapped}
         args = []
         for j, (x, bd) in enumerate(zip(vector_args, batch_axes)):
-            if bd is NOT_MAPPED:
+            if bd is batching.not_mapped:
                 if j in batch_args:
                     args.append(jnp.broadcast_to(x, (size,) + x.shape))
                 else:

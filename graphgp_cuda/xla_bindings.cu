@@ -13,6 +13,7 @@
 #include "refine.h"
 #include "refine_inv.h"
 #include "refine_logdet.h"
+#include "refine_vector.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -69,6 +70,22 @@ using xla::ffi::S64;
         else throw std::runtime_error("only compiled for k <= 64"); \
     } else { \
         throw std::runtime_error("only compiled for 1 <= n_dim <= 6"); \
+    }
+
+
+#define DISPATCH_VECTOR_K_DIM(DEST, FUNC) \
+    if (n_dim != 3) { \
+        throw std::runtime_error("vector CUDA refinement currently supports 3D point coordinates only"); \
+    } else if (k <= 4) { \
+        DEST = FUNC<4, 3>; \
+    } else if (k <= 8) { \
+        DEST = FUNC<8, 3>; \
+    } else if (k <= 16) { \
+        DEST = FUNC<16, 3>; \
+    } else if (k <= 32) { \
+        DEST = FUNC<32, 3>; \
+    } else { \
+        throw std::runtime_error("vector CUDA refinement is compiled for k <= 32"); \
     }
 
 // ==================== REFINE OPERATIONS ====================
@@ -474,6 +491,225 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S32>>() // offsets
         .Arg<Buffer<F32>>() // cov_bins
         .Arg<Buffer<F32>>() // cov_vals
+        .Ret<Buffer<F32>>() // logdet
+);
+
+
+// ==================== VECTOR REFINE OPERATIONS ====================
+
+Error refine_vector_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points,          // (N, d)
+    Buffer<S32> neighbors,       // (N - n0, k)
+    Buffer<S32> offsets,         // (L,)
+    Buffer<F32> initial_values,   // (B1, ..., n0, 3)
+    Buffer<F32> xi,               // (B1, ..., N - n0, 3)
+    Buffer<F32> params,           // (4,) = [ell, sigma2, jitter, periodic]
+    ResultBuffer<F32> values      // (B1, ..., N, 3)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    size_t n_batches = 1;
+    size_t n_batch_dims = initial_values.dimensions().size() - 2;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= initial_values.dimensions()[i];
+    }
+
+    decltype(&refine_vector<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        initial_values.typed_data(),
+        xi.typed_data(),
+        params.typed_data(),
+        values->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_ffi_32, refine_vector_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // initial_values
+        .Arg<Buffer<F32>>() // xi
+        .Arg<Buffer<F32>>() // params
+        .Ret<Buffer<F32>>() // values
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_vector_transpose_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points,
+    Buffer<S32> neighbors,
+    Buffer<S32> offsets,
+    Buffer<F32> params,
+    Buffer<F32> values,
+    ResultBuffer<F32> initial_values,
+    ResultBuffer<F32> xi,
+    ResultBuffer<F32> values_buffer
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    size_t n_batches = 1;
+    size_t n_batch_dims = values.dimensions().size() - 2;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= values.dimensions()[i];
+    }
+
+    decltype(&refine_vector_transpose<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector_transpose);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        params.typed_data(),
+        values.typed_data(),
+        values_buffer->typed_data(),
+        initial_values->typed_data(),
+        xi->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_transpose_ffi_32, refine_vector_transpose_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // params
+        .Arg<Buffer<F32>>() // values
+        .Ret<Buffer<F32>>() // initial_values
+        .Ret<Buffer<F32>>() // xi
+        .Ret<Buffer<F32>>() // values_buffer
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_vector_inv_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points,
+    Buffer<S32> neighbors,
+    Buffer<S32> offsets,
+    Buffer<F32> values,
+    Buffer<F32> params,
+    ResultBuffer<F32> initial_values,
+    ResultBuffer<F32> xi
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    size_t n_batches = 1;
+    size_t n_batch_dims = values.dimensions().size() - 2;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= values.dimensions()[i];
+    }
+
+    decltype(&refine_vector_inv<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector_inv);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        values.typed_data(),
+        params.typed_data(),
+        initial_values->typed_data(),
+        xi->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_inv_ffi_32, refine_vector_inv_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // values
+        .Arg<Buffer<F32>>() // params
+        .Ret<Buffer<F32>>() // initial_values
+        .Ret<Buffer<F32>>() // xi
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_vector_logdet_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points,
+    Buffer<S32> neighbors,
+    Buffer<S32> offsets,
+    Buffer<F32> params,
+    ResultBuffer<F32> logdet
+) {
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = points.dimensions()[0] - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+    size_t n_batches = 1;
+
+    decltype(&refine_vector_logdet<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector_logdet);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        params.typed_data(),
+        logdet->typed_data(),
+        n0,
+        k,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_logdet_ffi_32, refine_vector_logdet_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // neighbors
+        .Arg<Buffer<S32>>() // offsets
+        .Arg<Buffer<F32>>() // params
         .Ret<Buffer<F32>>() // logdet
 );
 
@@ -1226,6 +1462,225 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S64>>() // offsets
         .Arg<Buffer<F64>>() // cov_bins
         .Arg<Buffer<F64>>() // cov_vals
+        .Ret<Buffer<F64>>() // logdet
+);
+
+
+// ==================== VECTOR REFINE OPERATIONS ====================
+
+Error refine_vector_ffi_impl_64(
+    cudaStream_t stream,
+    Buffer<F64> points,          // (N, d)
+    Buffer<S64> neighbors,       // (N - n0, k)
+    Buffer<S64> offsets,         // (L,)
+    Buffer<F64> initial_values,   // (B1, ..., n0, 3)
+    Buffer<F64> xi,               // (B1, ..., N - n0, 3)
+    Buffer<F64> params,           // (4,) = [ell, sigma2, jitter, periodic]
+    ResultBuffer<F64> values      // (B1, ..., N, 3)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    size_t n_batches = 1;
+    size_t n_batch_dims = initial_values.dimensions().size() - 2;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= initial_values.dimensions()[i];
+    }
+
+    decltype(&refine_vector<1,1,int64_t,double>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        initial_values.typed_data(),
+        xi.typed_data(),
+        params.typed_data(),
+        values->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_ffi_64, refine_vector_ffi_impl_64,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F64>>() // points
+        .Arg<Buffer<S64>>() // neighbors
+        .Arg<Buffer<S64>>() // offsets
+        .Arg<Buffer<F64>>() // initial_values
+        .Arg<Buffer<F64>>() // xi
+        .Arg<Buffer<F64>>() // params
+        .Ret<Buffer<F64>>() // values
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_vector_transpose_ffi_impl_64(
+    cudaStream_t stream,
+    Buffer<F64> points,
+    Buffer<S64> neighbors,
+    Buffer<S64> offsets,
+    Buffer<F64> params,
+    Buffer<F64> values,
+    ResultBuffer<F64> initial_values,
+    ResultBuffer<F64> xi,
+    ResultBuffer<F64> values_buffer
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    size_t n_batches = 1;
+    size_t n_batch_dims = values.dimensions().size() - 2;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= values.dimensions()[i];
+    }
+
+    decltype(&refine_vector_transpose<1,1,int64_t,double>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector_transpose);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        params.typed_data(),
+        values.typed_data(),
+        values_buffer->typed_data(),
+        initial_values->typed_data(),
+        xi->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_transpose_ffi_64, refine_vector_transpose_ffi_impl_64,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F64>>() // points
+        .Arg<Buffer<S64>>() // neighbors
+        .Arg<Buffer<S64>>() // offsets
+        .Arg<Buffer<F64>>() // params
+        .Arg<Buffer<F64>>() // values
+        .Ret<Buffer<F64>>() // initial_values
+        .Ret<Buffer<F64>>() // xi
+        .Ret<Buffer<F64>>() // values_buffer
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_vector_inv_ffi_impl_64(
+    cudaStream_t stream,
+    Buffer<F64> points,
+    Buffer<S64> neighbors,
+    Buffer<S64> offsets,
+    Buffer<F64> values,
+    Buffer<F64> params,
+    ResultBuffer<F64> initial_values,
+    ResultBuffer<F64> xi
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = n_points - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+
+    size_t n_batches = 1;
+    size_t n_batch_dims = values.dimensions().size() - 2;
+    for (size_t i = 0; i < n_batch_dims; ++i) {
+        n_batches *= values.dimensions()[i];
+    }
+
+    decltype(&refine_vector_inv<1,1,int64_t,double>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector_inv);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        values.typed_data(),
+        params.typed_data(),
+        initial_values->typed_data(),
+        xi->typed_data(),
+        n0,
+        k,
+        n_points,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_inv_ffi_64, refine_vector_inv_ffi_impl_64,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F64>>() // points
+        .Arg<Buffer<S64>>() // neighbors
+        .Arg<Buffer<S64>>() // offsets
+        .Arg<Buffer<F64>>() // values
+        .Arg<Buffer<F64>>() // params
+        .Ret<Buffer<F64>>() // initial_values
+        .Ret<Buffer<F64>>() // xi
+);
+
+// ---------------------------------------------------------------------------------
+
+Error refine_vector_logdet_ffi_impl_64(
+    cudaStream_t stream,
+    Buffer<F64> points,
+    Buffer<S64> neighbors,
+    Buffer<S64> offsets,
+    Buffer<F64> params,
+    ResultBuffer<F64> logdet
+) {
+    size_t n_dim = points.dimensions()[1];
+    size_t n_levels = offsets.dimensions()[0];
+    size_t n0 = points.dimensions()[0] - neighbors.dimensions()[0];
+    size_t k = neighbors.dimensions()[1];
+    size_t n_batches = 1;
+
+    decltype(&refine_vector_logdet<1,1,int64_t,double>) dispatch = nullptr;
+    DISPATCH_VECTOR_K_DIM(dispatch, refine_vector_logdet);
+    dispatch(
+        stream,
+        points.typed_data(),
+        neighbors.typed_data(),
+        offsets.typed_data(),
+        params.typed_data(),
+        logdet->typed_data(),
+        n0,
+        k,
+        n_levels,
+        n_batches
+    );
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    refine_vector_logdet_ffi_64, refine_vector_logdet_ffi_impl_64,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F64>>() // points
+        .Arg<Buffer<S64>>() // neighbors
+        .Arg<Buffer<S64>>() // offsets
+        .Arg<Buffer<F64>>() // params
         .Ret<Buffer<F64>>() // logdet
 );
 
