@@ -59,7 +59,8 @@ __global__ void refine_inv_kernel(
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
     cholesky(mat, k + 1); // factorize
     solve_cholesky_forward(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
-    b_xi[idx - n0] = (vec[k] - dot(mat + tri(k, 0), vec, k)) / mat[tri(k, k)]; // x = (v - mean) / std
+    f_t std = mat[tri(k, k)];
+    b_xi[idx - n0] = (std > f_t(0)) ? (vec[k] - dot(mat + tri(k, 0), vec, k)) / std : f_t(0); // x = (v - mean) / std, or 0 if dropped
 }
 
 template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>

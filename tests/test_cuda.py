@@ -260,3 +260,42 @@ def test_logdet(setup_graph):
     assert jnp.isclose(logdet1, logdet2, rtol=_rtol(points.dtype), atol=_atol(points.dtype)), (
         "Log-determinants from JAX and CUDA do not match."
     )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64], ids=["f32", "f64"])
+def test_no_jitter_duplicates(dtype):
+    # no jitter and exact duplicate points: pivots for duplicates are dropped in both implementations
+    with jax.enable_x64(dtype == jnp.float64):
+        points = jr.normal(rng, (900, 3))
+        points = jnp.concatenate([points, points[:100]]).astype(dtype)
+        graph = gp.build_graph(points, n0=100, k=10, cuda=True)
+        covariance = gp.extras.matern_kernel(p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000)
+        covariance = (covariance[0].astype(dtype), covariance[1].astype(dtype))
+        xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
+        v = jr.normal(rng, (points.shape[0],)).astype(dtype)
+        rtol, atol = _rtol(dtype), _atol(dtype)
+
+        def forward(xi, cov_vals, *, cuda):
+            return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda)
+
+        jax_values, jax_vjp = jax.vjp(Partial(forward, cuda=False), xi, covariance[1])
+        cuda_values, cuda_vjp = jax.vjp(Partial(forward, cuda=True), xi, covariance[1])
+        assert jnp.all(jnp.isfinite(cuda_values)), "CUDA forward produced non-finite values."
+        assert jnp.allclose(jax_values, cuda_values, rtol=rtol, atol=atol), "JAX and CUDA forward do not match."
+        for a, b in zip(jax_vjp(v), cuda_vjp(v)):
+            assert jnp.all(jnp.isfinite(b)), "CUDA VJP produced non-finite values."
+            assert jnp.allclose(a, b, rtol=rtol, atol=atol), "JAX and CUDA VJP do not match."
+
+        tangents = (jr.normal(rng, xi.shape).astype(dtype), jr.normal(rng, covariance[1].shape).astype(dtype))
+        jax_jvp = jax.jvp(Partial(forward, cuda=False), (xi, covariance[1]), tangents)[1]
+        cuda_jvp = jax.jvp(Partial(forward, cuda=True), (xi, covariance[1]), tangents)[1]
+        assert jnp.allclose(jax_jvp, cuda_jvp, rtol=rtol, atol=atol), "JAX and CUDA JVP do not match."
+
+        xi_back = gp.generate_inv(graph, covariance, cuda_values, cuda=True)
+        assert jnp.all(jnp.isfinite(xi_back)), "CUDA inverse produced non-finite values."
+        values_back = gp.generate(graph, covariance, xi_back, cuda=True)
+        assert jnp.allclose(cuda_values, values_back, rtol=rtol, atol=atol), "Values from inverted xi do not match."
+
+        # the density is degenerate when points are dropped
+        assert gp.generate_logdet(graph, covariance, cuda=True) == -jnp.inf, "CUDA logdet should be -inf."
+        assert gp.generate_logdet(graph, covariance, cuda=False) == -jnp.inf, "JAX logdet should be -inf."
