@@ -7,6 +7,32 @@
 #include "linalg.h"
 #include "covariance.h"
 
+// Reorder the k neighbors of a point for diagonally pivoted Cholesky (largest conditional variance first, the fine point
+// stays last). Requires the neighbor points and the fine point in pts, uses mat as scratch. Writes the reordered
+// neighbor indices to nbr and reloads the neighbor points into pts in that order.
+template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+__forceinline__ __device__ void pivot_neighbors(
+    const f_t* points, // (N, d)
+    const i_t* neighbors_row, // (k,)
+    const f_t* cov_bins, // (R,)
+    const f_t* cov_vals, // (R,)
+    f_t* pts, // (k + 1, d)
+    f_t* mat, // (k + 1, k + 1) lower triangular
+    size_t* nbr, // (k,)
+    size_t k,
+    size_t n_cov
+) {
+    int perm[MAX_K + 1];
+    cov_lookup_matrix(pts, cov_bins, cov_vals, mat, k + 1, N_DIM, n_cov);
+    pivot_order(mat, perm, (int)k + 1, (int)k);
+    for (size_t i = 0; i < k; ++i) {
+        nbr[i] = neighbors_row[perm[i]];
+        for (size_t j = 0; j < N_DIM; ++j) {
+            pts[i * N_DIM + j] = points[nbr[i] * N_DIM + j];
+        }
+    }
+}
+
 template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
 __global__ void refine_kernel(
     const f_t* points, // (N, d)
@@ -40,10 +66,9 @@ __global__ void refine_kernel(
     f_t vec[MAX_K + 1];
     f_t mat[((MAX_K + 1) * (MAX_K + 2)) / 2]; // lower triangular matrix for joint covariance
 
-    // load neighbor points and values
+    // load neighbor points
     for (size_t i = 0; i < k; ++i) {
         size_t neighbor_idx = neighbors[(idx - n0) * k + i];
-        vec[i] = b_values[neighbor_idx]; // coarse points use values
         for (size_t j = 0; j < N_DIM; ++j) {
             pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
         }
@@ -54,6 +79,13 @@ __global__ void refine_kernel(
         pts[k * N_DIM + j] = points[idx * N_DIM + j];
     }
     vec[k] = b_xi[idx - n0];
+
+    // reorder neighbors by pivoting
+    size_t nbr[MAX_K];
+    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    for (size_t i = 0; i < k; ++i) {
+        vec[i] = b_values[nbr[i]];
+    }
 
     // refinement operation
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
@@ -156,6 +188,10 @@ __global__ void refine_transpose_kernel(
     }
     f_t fine_value = b_values[idx];
 
+    // reorder neighbors by pivoting
+    size_t nbr[MAX_K];
+    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+
     // refinement operation transpose
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
     cholesky(mat, k + 1); // L
@@ -163,7 +199,7 @@ __global__ void refine_transpose_kernel(
     atomicAdd(b_xi + (idx - n0), vec[k]);
     solve_cholesky_backward(mat, vec, k, 1); // (Lcc^T)^-1
     for (size_t i = 0; i < k; ++i) {
-        atomicAdd(b_values + neighbors[(idx - n0) * k + i], vec[i]);
+        atomicAdd(b_values + nbr[i], vec[i]);
     }
 }
 
@@ -259,11 +295,9 @@ __global__ void refine_jvp_kernel(
     f_t mat[((MAX_K + 1) * (MAX_K + 2)) / 2]; // lower triangular matrix for joint covariance
     f_t mat_tangent[((MAX_K + 1) * (MAX_K + 2)) / 2];
 
-    // load neighbor points and values
+    // load neighbor points
     for (size_t i = 0; i < k; ++i) {
         size_t neighbor_idx = neighbors[(idx - n0) * k + i];
-        vec[i] = b_values[neighbor_idx]; // coarse points use values
-        vec_tangent[i] = b_values_tangent[neighbor_idx];
         for (size_t j = 0; j < N_DIM; ++j) {
             pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
         }
@@ -276,6 +310,14 @@ __global__ void refine_jvp_kernel(
     vec[k] = b_xi[idx - n0];
     vec_tangent[k] = b_xi_tangent[idx - n0];
     
+    // reorder neighbors by pivoting
+    size_t nbr[MAX_K];
+    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    for (size_t i = 0; i < k; ++i) {
+        vec[i] = b_values[nbr[i]];
+        vec_tangent[i] = b_values_tangent[nbr[i]];
+    }
+
     // load and factorize joint covariance, with jvp
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // K
     cov_lookup_matrix(pts, cov_bins, b_cov_vals_tangent, mat_tangent, k + 1, N_DIM, n_cov); // dK
@@ -395,7 +437,6 @@ __global__ void refine_vjp_kernel(
     // load neighbor points
     for (size_t i = 0; i < k; ++i) {
         size_t neighbor_idx = neighbors[(idx - n0) * k + i];
-        vec[i] = b_values[neighbor_idx];
         for (size_t j = 0; j < N_DIM; ++j) {
             pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
         }
@@ -408,6 +449,13 @@ __global__ void refine_vjp_kernel(
     vec[k] = b_xi[idx - n0];
     f_t fine_value_tangent = b_values_tangent[idx];
 
+    // reorder neighbors by pivoting
+    size_t nbr[MAX_K];
+    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    for (size_t i = 0; i < k; ++i) {
+        vec[i] = b_values[nbr[i]];
+    }
+
     // factorize matrix and prepare intermediate vectors
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
     cholesky(mat, k + 1); // L
@@ -418,7 +466,7 @@ __global__ void refine_vjp_kernel(
     // linear transpose
     atomicAdd(b_xi_tangent + (idx - n0), vec_tangent[k]);
     for (size_t i = 0; i < k; ++i) {
-        atomicAdd(b_values_tangent + neighbors[(idx - n0) * k + i], vec_tangent[i]);
+        atomicAdd(b_values_tangent + nbr[i], vec_tangent[i]);
     }
 
     // covariance vjp

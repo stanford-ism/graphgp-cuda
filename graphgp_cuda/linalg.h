@@ -108,6 +108,48 @@ __forceinline__ __device__ void cholesky(
     }
 }
 
+// symmetric access to a lower triangular matrix
+__forceinline__ __device__ size_t sym(size_t i, size_t j) {
+    return (i >= j) ? tri(i, j) : tri(j, i);
+}
+
+// order for diagonally pivoted Cholesky: at each step the remaining index with the largest Schur complement diagonal
+// (conditional variance given the indices before it) comes next, ties to the lowest index. Only the first n_pivot
+// indices are reordered, the rest keep their positions. Processing tiny pivots last keeps them from amplifying rounding
+// errors in later rows. Destroys A.
+template <typename f_t>
+__forceinline__ __device__ void pivot_order(
+    f_t* A, // (n, n) lower triangular
+    int* perm, // (n,)
+    int n,
+    int n_pivot
+) {
+    for (int i = 0; i < n; ++i) {
+        perm[i] = i;
+    }
+    for (int j = 0; j < n_pivot; ++j) {
+        // choose pivot among remaining indices perm[j:n_pivot]
+        int q = j;
+        for (int r = j + 1; r < n_pivot; ++r) {
+            f_t d = A[tri(perm[r], perm[r])];
+            f_t best = A[tri(perm[q], perm[q])];
+            if (d > best || (d == best && perm[r] < perm[q])) q = r;
+        }
+        int p = perm[q];
+        perm[q] = perm[j];
+        perm[j] = p;
+
+        // Schur complement update of the remaining indices
+        f_t S_pp = A[tri(p, p)];
+        f_t inv = (S_pp > f_t(0)) ? f_t(1) / S_pp : f_t(0);
+        for (int r = j + 1; r < n_pivot; ++r) {
+            for (int s = j + 1; s <= r; ++s) {
+                A[sym(perm[r], perm[s])] -= inv * A[sym(perm[r], p)] * A[sym(perm[s], p)];
+            }
+        }
+    }
+}
+
 // compute L, dA -> dL in-place, where A is SPD and all are lower-triangular
 template <typename f_t>
 __forceinline__ __device__ void cholesky_jvp(

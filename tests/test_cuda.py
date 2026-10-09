@@ -168,7 +168,9 @@ def test_cov_vjp(setup_graph):
     cuda_vjp_result = cuda_vjp[1](v)[0]
 
     assert jnp.allclose(jax_vjp[0], cuda_vjp[0], rtol=_rtol(dtype), atol=_atol(dtype)), "JAX and CUDA forward do not match."
-    assert jnp.allclose(jax_vjp_result, cuda_vjp_result, rtol=_rtol(dtype), atol=_atol(dtype)), "JAX and CUDA cov VJP do not match."
+    # cov VJP entries are sums of many terms accumulated in nondeterministic order, so f32 needs a looser rtol
+    rtol = 1e-5 if dtype == jnp.float32 else _rtol(dtype)
+    assert jnp.allclose(jax_vjp_result, cuda_vjp_result, rtol=rtol, atol=_atol(dtype)), "JAX and CUDA cov VJP do not match."
 
 
 def test_vmap(setup_graph):

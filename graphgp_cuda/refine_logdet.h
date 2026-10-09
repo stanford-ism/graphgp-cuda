@@ -37,7 +37,7 @@ __global__ void refine_logdet_kernel(
     f_t pts[(MAX_K + 1) * N_DIM]; // fine point + K coarse points
     f_t mat[((MAX_K + 1) * (MAX_K + 2)) / 2]; // lower triangular matrix for joint covariance
 
-    // load neighbor points and values
+    // load neighbor points
     for (size_t i = 0; i < k; ++i) {
         size_t neighbor_idx = neighbors[(idx - n0) * k + i];
         for (size_t j = 0; j < N_DIM; ++j) {
@@ -49,6 +49,10 @@ __global__ void refine_logdet_kernel(
     for (size_t j = 0; j < N_DIM; ++j) {
         pts[k * N_DIM + j] = points[idx * N_DIM + j];
     }
+
+    // reorder neighbors by pivoting
+    size_t nbr[MAX_K];
+    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
 
     // refinement operation
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
