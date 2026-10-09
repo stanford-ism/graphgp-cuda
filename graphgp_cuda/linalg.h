@@ -4,9 +4,10 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-// Pivots of the Cholesky decomposition below n * eps * A_ii are below floating point resolution and are dropped: L_ii
-// and the column below it are set to zero, so that point carries no information to later rows. Every division by a
-// zero pivot is replaced by zero, in the solves and in the derivatives (which hold the set of dropped pivots fixed).
+// With CLAMP, pivots of the Cholesky decomposition below n * eps * A_ii are below floating point resolution and are
+// dropped: L_ii and the column below it are set to zero, so that point carries no information to later rows. Every
+// division by a zero pivot is replaced by zero, in the solves and in the derivatives (which hold the set of dropped
+// pivots fixed). Without CLAMP, these functions are the plain unpivoted versions, which give NaN for singular matrices.
 
 template <typename f_t>
 __forceinline__ __device__ f_t machine_eps();
@@ -84,7 +85,7 @@ __forceinline__ __device__ void matmul_tri(
 
 // compute the Cholesky decomposition L L.T = A, assuming triangular matrix order and modifying A in place
 // pivots below n * eps * A_ii are dropped (L_ii = 0 and zero column below)
-template <typename f_t>
+template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void cholesky(
     f_t* A, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
     int n
@@ -96,7 +97,7 @@ __forceinline__ __device__ void cholesky(
             for (int k = 0; k < j; ++k) {
                 sum += A[tri(i, k)] * A[tri(j, k)];
             }
-            A[tri(i, j)] = (A[tri(j, j)] > f_t(0)) ? (A[tri(i, j)] - sum) / A[tri(j, j)] : f_t(0);
+            A[tri(i, j)] = (!CLAMP || A[tri(j, j)] > f_t(0)) ? (A[tri(i, j)] - sum) / A[tri(j, j)] : f_t(0);
         }
         // diagonal elements
         f_t sum = f_t(0);
@@ -104,7 +105,7 @@ __forceinline__ __device__ void cholesky(
             sum += A[tri(i, j)] * A[tri(i, j)];
         }
         f_t d = A[tri(i, i)] - sum;
-        A[tri(i, i)] = (d > f_t(n) * machine_eps<f_t>() * A[tri(i, i)]) ? sqrt(d) : f_t(0);
+        A[tri(i, i)] = (!CLAMP || d > f_t(n) * machine_eps<f_t>() * A[tri(i, i)]) ? sqrt(d) : f_t(0);
     }
 }
 
@@ -151,7 +152,7 @@ __forceinline__ __device__ void pivot_order(
 }
 
 // compute L, dA -> dL in-place, where A is SPD and all are lower-triangular
-template <typename f_t>
+template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void cholesky_jvp(
     const f_t *L,
     f_t *dA,
@@ -165,19 +166,19 @@ __forceinline__ __device__ void cholesky_jvp(
                 sum += L[tri(i, k)] * dA[tri(j, k)] + dA[tri(i, k)] * L[tri(j, k)];
             }
             sum += L[tri(i, j)] * dA[tri(j, j)];
-            dA[tri(i, j)] = (L[tri(j, j)] > f_t(0)) ? (dA[tri(i, j)] - sum) / L[tri(j, j)] : f_t(0);
+            dA[tri(i, j)] = (!CLAMP || L[tri(j, j)] > f_t(0)) ? (dA[tri(i, j)] - sum) / L[tri(j, j)] : f_t(0);
         }
         // diagonal element
         f_t sum = f_t(0);
         for (int j = 0; j < i; ++j) {
             sum += L[tri(i, j)] * dA[tri(i, j)];
         }
-        dA[tri(i, i)] = (L[tri(i, i)] > f_t(0)) ? ((dA[tri(i, i)] / f_t(2)) - sum) / L[tri(i, i)] : f_t(0);
+        dA[tri(i, i)] = (!CLAMP || L[tri(i, i)] > f_t(0)) ? ((dA[tri(i, i)] / f_t(2)) - sum) / L[tri(i, i)] : f_t(0);
     }
 }
 
 // compute L, dL -> dA in-place, where all are lower-triangular
-template <typename f_t>
+template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void cholesky_vjp(
     const f_t *L,
     f_t *dL,
@@ -193,13 +194,13 @@ __forceinline__ __device__ void cholesky_vjp(
                 // same as above just access lower triangular for dL_ik when k > i
                 sum += dL[tri(k, i)] * L[tri(k, j)];
             }
-            dL[tri(i, j)] = (L[tri(j, j)] > f_t(0)) ? ((dL[tri(i, j)] / f_t(2)) - sum) / L[tri(j, j)] : f_t(0);
+            dL[tri(i, j)] = (!CLAMP || L[tri(j, j)] > f_t(0)) ? ((dL[tri(i, j)] / f_t(2)) - sum) / L[tri(j, j)] : f_t(0);
         }
     }
 }
 
 // solve L X = B given lower triangular L
-template <typename f_t>
+template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void solve_cholesky_forward(
     const f_t* L, // (n, n)
     f_t* B, // (n, m)
@@ -214,13 +215,13 @@ __forceinline__ __device__ void solve_cholesky_forward(
             for (int k = 0; k < i; ++k) {
                 sum += L[tri(i, k)] * B[k * m + j];
             }
-            B[i * m + j] = (L[tri(i, i)] > f_t(0)) ? (B[i * m + j] - sum) / L[tri(i, i)] : f_t(0);
+            B[i * m + j] = (!CLAMP || L[tri(i, i)] > f_t(0)) ? (B[i * m + j] - sum) / L[tri(i, i)] : f_t(0);
         }
     }
 }
 
 // solve L.T X = B given lower triangular L
-template <typename f_t>
+template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void solve_cholesky_backward(
     const f_t* L, // (n, n)
     f_t* B, // (n, m)
@@ -234,21 +235,21 @@ __forceinline__ __device__ void solve_cholesky_backward(
             for (int k = i + 1; k < n; ++k) {
                 sum += L[tri(k, i)] * B[k * m + j];
             }
-            B[i * m + j] = (L[tri(i, i)] > f_t(0)) ? (B[i * m + j] - sum) / L[tri(i, i)] : f_t(0);
+            B[i * m + j] = (!CLAMP || L[tri(i, i)] > f_t(0)) ? (B[i * m + j] - sum) / L[tri(i, i)] : f_t(0);
         }
     }
 }
 
 // solve A X = B given L, the Cholesky decomposition of A, assuming triangular matrix order and modifying B in place
-template <typename f_t>
+template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void solve_cholesky(
     const f_t* L, // (n, n)
     f_t* B, // (n, m)
     int n,
     int m
 ) {
-    solve_cholesky_forward(L, B, n, m);
-    solve_cholesky_backward(L, B, n, m);
+    solve_cholesky_forward<CLAMP>(L, B, n, m);
+    solve_cholesky_backward<CLAMP>(L, B, n, m);
 }
 
 // multiply L B in-place

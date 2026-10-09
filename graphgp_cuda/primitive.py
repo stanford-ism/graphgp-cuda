@@ -34,28 +34,33 @@ refine_logdet_p = {
 }
 
 
-def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
+# ``clamp`` selects the kernels that drop Cholesky pivots below floating point resolution and order neighbors by
+# pivoting, instead of the plain unpivoted Cholesky (which gives NaN for singular matrices). It is passed to the FFI
+# handlers as a static attribute, so every rule below forwards the primitive parameters.
+
+
+def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, *, clamp=True):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
     if casted_args[0].dtype == jnp.float64:
-        return refine_p["64"].bind(*casted_args)[0]
+        return refine_p["64"].bind(*casted_args, clamp=bool(clamp))[0]
     else:
-        return refine_p["32"].bind(*casted_args)[0]
+        return refine_p["32"].bind(*casted_args, clamp=bool(clamp))[0]
 
 
-def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values):
+def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values, *, clamp=True):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, values)
     if casted_args[0].dtype == jnp.float64:
-        return refine_inv_p["64"].bind(*casted_args)
+        return refine_inv_p["64"].bind(*casted_args, clamp=bool(clamp))
     else:
-        return refine_inv_p["32"].bind(*casted_args)
+        return refine_inv_p["32"].bind(*casted_args, clamp=bool(clamp))
 
 
-def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
+def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals, *, clamp=True):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals)
     if casted_args[0].dtype == jnp.float64:
-        return refine_logdet_p["64"].bind(*casted_args)[0]
+        return refine_logdet_p["64"].bind(*casted_args, clamp=bool(clamp))[0]
     else:
-        return refine_logdet_p["32"].bind(*casted_args)[0]
+        return refine_logdet_p["32"].bind(*casted_args, clamp=bool(clamp))[0]
 
 
 def _determine_dtype(*args):
@@ -119,16 +124,16 @@ def initialize():
             batch_shape = initial_values.shape[:-1]
             return (ShapedArray(batch_shape + (n,), dtype),)
 
-        def refine_value_and_jvp(primals, tangents):
-            primals_out = refine_p[mode].bind(*primals)
+        def refine_value_and_jvp(primals, tangents, **params):
+            primals_out = refine_p[mode].bind(*primals, **params)
 
             if all(isinstance(t, ad.Zero) for t in tangents[:5]):  # linear case
                 filled_tangents = tuple(ad.instantiate_zeros(t) for t in tangents[5:])
-                tangents_out = refine_p[mode].bind(*primals[:5], *filled_tangents)
+                tangents_out = refine_p[mode].bind(*primals[:5], *filled_tangents, **params)
 
             elif all(isinstance(t, ad.Zero) for t in tangents[:4]):  # covariance derivative
                 filled_tangents = tuple(ad.instantiate_zeros(t) for t in tangents[4:])
-                tangents_out = refine_jvp_p[mode].bind(*primals, primals_out[0], *filled_tangents)
+                tangents_out = refine_jvp_p[mode].bind(*primals, primals_out[0], *filled_tangents, **params)
             else:
                 nonzero_tangents = tuple(i for i, t in enumerate(tangents) if not isinstance(t, ad.Zero))
                 raise NotImplementedError(f"JVP not supported for non-Zero tangents {nonzero_tangents}.")
@@ -277,7 +282,7 @@ def make_impl_rule(ffi_name, abstract):
     The abstract function should return a tuple of ShapedArrays describing the output(s) of the primitive.
     """
 
-    def impl(*args):
+    def impl(*args, **params):
         abstract_out = abstract(*args)
         if not isinstance(abstract_out, tuple):
             raise ValueError("Abstract function must return a tuple of ShapedArrays.")
@@ -285,7 +290,7 @@ def make_impl_rule(ffi_name, abstract):
         out = jax.ffi.ffi_call(
             ffi_name,
             ffi_out,
-        )(*args)
+        )(*args, **params)
         return out
 
     return impl
@@ -304,7 +309,7 @@ def make_transpose_rule(transposes):
     write code which takes advantage when at or bt is Zero. This could be added in the future.
     """
 
-    def transpose_rule(tangents_out, *primals_in):
+    def transpose_rule(tangents_out, *primals_in, **params):
         # find first transpose primitive that covers all undefined primals
         undefined_primals = tuple(i for i, p in enumerate(primals_in) if ad.is_undefined_primal(p))
         for transpose_prim, linear_args in transposes:
@@ -313,7 +318,7 @@ def make_transpose_rule(transposes):
                 # process inputs and pass to transpose primitive
                 trimmed_primals = tuple(p for i, p in enumerate(primals_in) if i in nonlinear_args)
                 filled_tangents_out = (ad.instantiate_zeros(t) for t in tangents_out)
-                tangents_in = transpose_prim.bind(*trimmed_primals, *filled_tangents_out)
+                tangents_in = transpose_prim.bind(*trimmed_primals, *filled_tangents_out, **params)
 
                 # make tuple with tangents where undefined primal and None elsewhere, as expected by JAX
                 mapping = dict(zip(linear_args, tangents_in))
@@ -334,7 +339,7 @@ def make_batching_rule(prim, batch_args):
     If any non-batch_args have a batch dimension, raise an error.
     """
 
-    def batching_rule(vector_args, batch_axes):
+    def batching_rule(vector_args, batch_axes, **params):
         bad_batch_args = tuple(
             j for j, bd in enumerate(batch_axes) if j not in batch_args and bd is not NOT_MAPPED
         )
@@ -350,7 +355,7 @@ def make_batching_rule(prim, batch_args):
                     args.append(x)
             else:
                 args.append(batching.bdim_at_front(x, bd, size))
-        out = prim.bind(*args)
+        out = prim.bind(*args, **params)
         if prim.multiple_results:
             return out, (0,) * len(out)
         else:
@@ -362,8 +367,9 @@ def make_batching_rule(prim, batch_args):
 def register_primitive(prim, *, ffi_name, abstract, platform, batch_args=(), transposes=[], jvp_rule=None):
     """
     Call several helper functions to register a custom JAX primitive with a given abstract eval, FFI implementation, batching rule, and transposes.
+    Keyword parameters given to ``prim.bind`` are forwarded by every rule and passed to the FFI handler as attributes.
     """
-    prim.def_abstract_eval(abstract)
+    prim.def_abstract_eval(lambda *args, **params: abstract(*args))
     prim.def_impl(make_impl_rule(ffi_name, abstract))
     mlir.register_lowering(prim, jax.ffi.ffi_lowering(ffi_name), platform=platform)
 

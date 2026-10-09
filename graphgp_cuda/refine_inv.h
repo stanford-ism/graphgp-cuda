@@ -6,8 +6,9 @@
 #include "common.h"
 #include "linalg.h"
 #include "covariance.h"
+#include "refine.h"
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_inv_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
@@ -54,22 +55,25 @@ __global__ void refine_inv_kernel(
     }
     vec[k] = b_values[idx];
 
-    // reorder neighbors by pivoting
-    size_t nbr[MAX_K];
-    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    // with clamping, reorder neighbors by pivoting
+    const i_t* nbr_row = neighbors + (idx - n0) * k;
+    size_t nbr[CLAMP ? MAX_K : 1];
+    if constexpr (CLAMP) {
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    }
     for (size_t i = 0; i < k; ++i) {
-        vec[i] = b_values[nbr[i]];
+        vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
     }
 
     // inverse refinement operation
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
-    cholesky(mat, k + 1); // factorize
-    solve_cholesky_forward(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
+    cholesky<CLAMP>(mat, k + 1); // factorize
+    solve_cholesky_forward<CLAMP>(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
     f_t std = mat[tri(k, k)];
-    b_xi[idx - n0] = (std > f_t(0)) ? (vec[k] - dot(mat + tri(k, 0), vec, k)) / std : f_t(0); // x = (v - mean) / std, or 0 if dropped
+    b_xi[idx - n0] = (!CLAMP || std > f_t(0)) ? (vec[k] - dot(mat + tri(k, 0), vec, k)) / std : f_t(0); // x = (v - mean) / std, or 0 if dropped
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __host__ void refine_inv(
     cudaStream_t stream,
     const f_t* points,
@@ -101,7 +105,7 @@ __host__ void refine_inv(
         size_t start_idx = offsets_host[level - 1];
         size_t end_idx = offsets_host[level];
         size_t n_threads = (end_idx - start_idx) * n_batches;
-        refine_inv_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
+        refine_inv_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
             cov_bins,

@@ -71,6 +71,54 @@ using xla::ffi::S64;
         throw std::runtime_error("only compiled for 1 <= n_dim <= 6"); \
     }
 
+// same as DISPATCH_K_DIM for refine functions templated on CLAMP
+#define DISPATCH_K_DIM_CLAMP(DEST, FUNC, CLAMP) \
+    if (n_dim == 1) { \
+        if      (k <= 4)  DEST = FUNC<4, 1, CLAMP>; \
+        else if (k <= 8)  DEST = FUNC<8, 1, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 1, CLAMP>; \
+        else if (k <= 32) DEST = FUNC<32, 1, CLAMP>; \
+        else if (k <= 64) DEST = FUNC<64, 1, CLAMP>; \
+        else throw std::runtime_error("only compiled for k <= 64"); \
+    } else if (n_dim == 2) { \
+        if      (k <= 4)  DEST = FUNC<4, 2, CLAMP>; \
+        else if (k <= 8)  DEST = FUNC<8, 2, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 2, CLAMP>; \
+        else if (k <= 32) DEST = FUNC<32, 2, CLAMP>; \
+        else if (k <= 64) DEST = FUNC<64, 2, CLAMP>; \
+        else throw std::runtime_error("only compiled for k <= 64"); \
+    } else if (n_dim == 3) { \
+        if      (k <= 4)  DEST = FUNC<4, 3, CLAMP>; \
+        else if (k <= 8)  DEST = FUNC<8, 3, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 3, CLAMP>; \
+        else if (k <= 32) DEST = FUNC<32, 3, CLAMP>; \
+        else if (k <= 64) DEST = FUNC<64, 3, CLAMP>; \
+        else throw std::runtime_error("only compiled for k <= 64"); \
+    } else if (n_dim == 4) { \
+        if      (k <= 4)  DEST = FUNC<4, 4, CLAMP>; \
+        else if (k <= 8)  DEST = FUNC<8, 4, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 4, CLAMP>; \
+        else if (k <= 32) DEST = FUNC<32, 4, CLAMP>; \
+        else if (k <= 64) DEST = FUNC<64, 4, CLAMP>; \
+        else throw std::runtime_error("only compiled for k <= 64"); \
+    } else if (n_dim == 5) { \
+        if      (k <= 4)  DEST = FUNC<4, 5, CLAMP>; \
+        else if (k <= 8)  DEST = FUNC<8, 5, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 5, CLAMP>; \
+        else if (k <= 32) DEST = FUNC<32, 5, CLAMP>; \
+        else if (k <= 64) DEST = FUNC<64, 5, CLAMP>; \
+        else throw std::runtime_error("only compiled for k <= 64"); \
+    } else if (n_dim == 6) { \
+        if      (k <= 4)  DEST = FUNC<4, 6, CLAMP>; \
+        else if (k <= 8)  DEST = FUNC<8, 6, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 6, CLAMP>; \
+        else if (k <= 32) DEST = FUNC<32, 6, CLAMP>; \
+        else if (k <= 64) DEST = FUNC<64, 6, CLAMP>; \
+        else throw std::runtime_error("only compiled for k <= 64"); \
+    } else { \
+        throw std::runtime_error("only compiled for 1 <= n_dim <= 6"); \
+    }
+
 // ==================== REFINE OPERATIONS ====================
 
 Error refine_ffi_impl(
@@ -82,7 +130,8 @@ Error refine_ffi_impl(
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
-    ResultBuffer<F32> values // (B1, B2, ..., N)
+    ResultBuffer<F32> values, // (B1, B2, ..., N)
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -98,8 +147,12 @@ Error refine_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine<1,1,int,float>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine);
+    decltype(&refine<1,1,true,int,float>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -133,6 +186,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // initial_values
         .Arg<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -147,7 +201,8 @@ Error refine_transpose_ffi_impl(
     Buffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
-    ResultBuffer<F32> values_buffer // (B1, B2, ..., N) to use as a temporary buffer
+    ResultBuffer<F32> values_buffer, // (B1, B2, ..., N) to use as a temporary buffer
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -163,8 +218,12 @@ Error refine_transpose_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_transpose<1,1,int,float>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_transpose);
+    decltype(&refine_transpose<1,1,true,int,float>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_transpose, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_transpose, false);
+    }
     dispatch(
         stream,
         points.typed_data(), 
@@ -200,6 +259,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // initial_values
         .Ret<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values_buffer
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -217,7 +277,8 @@ Error refine_jvp_ffi_impl(
     Buffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
     Buffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
-    ResultBuffer<F32> values_tangent
+    ResultBuffer<F32> values_tangent,
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -233,8 +294,12 @@ Error refine_jvp_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_jvp<1,1,int,float>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_jvp);
+    decltype(&refine_jvp<1,1,true,int,float>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_jvp, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_jvp, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -275,6 +340,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // initial_values_tangent
         .Arg<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -293,7 +359,8 @@ Error refine_vjp_ffi_impl(
     ResultBuffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
     ResultBuffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
-    ResultBuffer<F32> values_tangent_buffer // (B1, B2, ..., N) to use as a temporary buffer
+    ResultBuffer<F32> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -309,8 +376,12 @@ Error refine_vjp_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_vjp<1,1,int,float>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_vjp);
+    decltype(&refine_vjp<1,1,true,int,float>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_vjp, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_vjp, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -353,6 +424,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // initial_values_tangent
         .Ret<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent_buffer
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -366,7 +438,8 @@ Error refine_inv_ffi_impl(
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
     Buffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
-    ResultBuffer<F32> xi // (B1, B2, ..., N - n0)
+    ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -382,8 +455,12 @@ Error refine_inv_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_inv<1,1,int,float>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_inv);
+    decltype(&refine_inv<1,1,true,int,float>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_inv, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_inv, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -417,6 +494,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // values
         .Ret<Buffer<F32>>() // initial_values
         .Ret<Buffer<F32>>() // xi
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -428,7 +506,8 @@ Error refine_logdet_ffi_impl(
     Buffer<S32> offsets, // (B,) marking the ends of each batch
     Buffer<F32> cov_bins, // (R,)
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
-    ResultBuffer<F32> logdet // (B1, B2, ...)
+    ResultBuffer<F32> logdet, // (B1, B2, ...)
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -444,8 +523,12 @@ Error refine_logdet_ffi_impl(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_logdet<1,1,int,float>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_logdet);
+    decltype(&refine_logdet<1,1,true,int,float>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_logdet, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_logdet, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -475,6 +558,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // cov_bins
         .Arg<Buffer<F32>>() // cov_vals
         .Ret<Buffer<F32>>() // logdet
+        .Attr<bool>("clamp")
 );
 
 // ==================== GRAPH CONSTRUCTION ====================
@@ -834,7 +918,8 @@ Error refine_ffi_impl_64(
     Buffer<F64> cov_vals, // (B1, B2, ..., R)
     Buffer<F64> initial_values, // (B1, B2, ..., n0)
     Buffer<F64> xi, // (B1, B2, ..., N - n0)
-    ResultBuffer<F64> values // (B1, B2, ..., N)
+    ResultBuffer<F64> values, // (B1, B2, ..., N)
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -850,8 +935,12 @@ Error refine_ffi_impl_64(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine<1,1,int64_t,double>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine);
+    decltype(&refine<1,1,true,int64_t,double>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -885,6 +974,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // initial_values
         .Arg<Buffer<F64>>() // xi
         .Ret<Buffer<F64>>() // values
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -899,7 +989,8 @@ Error refine_transpose_ffi_impl_64(
     Buffer<F64> values, // (B1, B2, ..., N)
     ResultBuffer<F64> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi, // (B1, B2, ..., N - n0)
-    ResultBuffer<F64> values_buffer // (B1, B2, ..., N) to use as a temporary buffer
+    ResultBuffer<F64> values_buffer, // (B1, B2, ..., N) to use as a temporary buffer
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -915,8 +1006,12 @@ Error refine_transpose_ffi_impl_64(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_transpose<1,1,int64_t,double>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_transpose);
+    decltype(&refine_transpose<1,1,true,int64_t,double>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_transpose, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_transpose, false);
+    }
     dispatch(
         stream,
         points.typed_data(), 
@@ -952,6 +1047,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>() // initial_values
         .Ret<Buffer<F64>>() // xi
         .Ret<Buffer<F64>>() // values_buffer
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -969,7 +1065,8 @@ Error refine_jvp_ffi_impl_64(
     Buffer<F64> cov_vals_tangent, // (B1, B2, ..., R)
     Buffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
-    ResultBuffer<F64> values_tangent
+    ResultBuffer<F64> values_tangent,
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -985,8 +1082,12 @@ Error refine_jvp_ffi_impl_64(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_jvp<1,1,int64_t,double>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_jvp);
+    decltype(&refine_jvp<1,1,true,int64_t,double>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_jvp, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_jvp, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -1027,6 +1128,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // initial_values_tangent
         .Arg<Buffer<F64>>() // xi_tangent
         .Ret<Buffer<F64>>() // values_tangent
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1045,7 +1147,8 @@ Error refine_vjp_ffi_impl_64(
     ResultBuffer<F64> cov_vals_tangent, // (B1, B2, ..., R)
     ResultBuffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
-    ResultBuffer<F64> values_tangent_buffer // (B1, B2, ..., N) to use as a temporary buffer
+    ResultBuffer<F64> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1061,8 +1164,12 @@ Error refine_vjp_ffi_impl_64(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_vjp<1,1,int64_t,double>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_vjp);
+    decltype(&refine_vjp<1,1,true,int64_t,double>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_vjp, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_vjp, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -1105,6 +1212,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>() // initial_values_tangent
         .Ret<Buffer<F64>>() // xi_tangent
         .Ret<Buffer<F64>>() // values_tangent_buffer
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1118,7 +1226,8 @@ Error refine_inv_ffi_impl_64(
     Buffer<F64> cov_vals, // (B1, B2, ..., R)
     Buffer<F64> values, // (B1, B2, ..., N)
     ResultBuffer<F64> initial_values, // (B1, B2, ..., n0)
-    ResultBuffer<F64> xi // (B1, B2, ..., N - n0)
+    ResultBuffer<F64> xi, // (B1, B2, ..., N - n0)
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1134,8 +1243,12 @@ Error refine_inv_ffi_impl_64(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_inv<1,1,int64_t,double>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_inv);
+    decltype(&refine_inv<1,1,true,int64_t,double>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_inv, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_inv, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -1169,6 +1282,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // values
         .Ret<Buffer<F64>>() // initial_values
         .Ret<Buffer<F64>>() // xi
+        .Attr<bool>("clamp")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1180,7 +1294,8 @@ Error refine_logdet_ffi_impl_64(
     Buffer<S64> offsets, // (B,) marking the ends of each batch
     Buffer<F64> cov_bins, // (R,)
     Buffer<F64> cov_vals, // (B1, B2, ..., R)
-    ResultBuffer<F64> logdet // (B1, B2, ...)
+    ResultBuffer<F64> logdet, // (B1, B2, ...)
+    bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1196,8 +1311,12 @@ Error refine_logdet_ffi_impl_64(
         n_batches *= cov_vals.dimensions()[i];
     }
 
-    decltype(&refine_logdet<1,1,int64_t,double>) dispatch = nullptr;
-    DISPATCH_K_DIM(dispatch, refine_logdet);
+    decltype(&refine_logdet<1,1,true,int64_t,double>) dispatch = nullptr;
+    if (clamp) {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_logdet, true);
+    } else {
+        DISPATCH_K_DIM_CLAMP(dispatch, refine_logdet, false);
+    }
     dispatch(
         stream,
         points.typed_data(),
@@ -1227,6 +1346,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // cov_bins
         .Arg<Buffer<F64>>() // cov_vals
         .Ret<Buffer<F64>>() // logdet
+        .Attr<bool>("clamp")
 );
 
 // ==================== GRAPH CONSTRUCTION ====================

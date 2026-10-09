@@ -7,6 +7,16 @@
 #include "linalg.h"
 #include "covariance.h"
 
+// index of the i-th neighbor, in pivoted order if clamping
+template <bool CLAMP, typename i_t>
+__forceinline__ __device__ size_t neighbor_index(const size_t* nbr, const i_t* nbr_row, size_t i) {
+    if constexpr (CLAMP) {
+        return nbr[i];
+    } else {
+        return nbr_row[i];
+    }
+}
+
 // Reorder the k neighbors of a point for diagonally pivoted Cholesky (largest conditional variance first, the fine point
 // stays last). Requires the neighbor points and the fine point in pts, uses mat as scratch. Writes the reordered
 // neighbor indices to nbr and reloads the neighbor points into pts in that order.
@@ -33,7 +43,7 @@ __forceinline__ __device__ void pivot_neighbors(
     }
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
@@ -80,23 +90,26 @@ __global__ void refine_kernel(
     }
     vec[k] = b_xi[idx - n0];
 
-    // reorder neighbors by pivoting
-    size_t nbr[MAX_K];
-    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    // with clamping, reorder neighbors by pivoting
+    const i_t* nbr_row = neighbors + (idx - n0) * k;
+    size_t nbr[CLAMP ? MAX_K : 1];
+    if constexpr (CLAMP) {
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    }
     for (size_t i = 0; i < k; ++i) {
-        vec[i] = b_values[nbr[i]];
+        vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
     }
 
     // refinement operation
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
-    cholesky(mat, k + 1); // factorize
-    solve_cholesky_forward(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
+    cholesky<CLAMP>(mat, k + 1); // factorize
+    solve_cholesky_forward<CLAMP>(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
     b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // v = L @ xi
 }
 
 
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __host__ void refine(
     cudaStream_t stream,
     const f_t* points,
@@ -124,7 +137,7 @@ __host__ void refine(
         cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
-        refine_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
+        refine_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
             cov_bins,
@@ -141,7 +154,7 @@ __host__ void refine(
     }
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>  
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>  
 __global__ void refine_transpose_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
@@ -188,23 +201,26 @@ __global__ void refine_transpose_kernel(
     }
     f_t fine_value = b_values[idx];
 
-    // reorder neighbors by pivoting
-    size_t nbr[MAX_K];
-    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    // with clamping, reorder neighbors by pivoting
+    const i_t* nbr_row = neighbors + (idx - n0) * k;
+    size_t nbr[CLAMP ? MAX_K : 1];
+    if constexpr (CLAMP) {
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    }
 
     // refinement operation transpose
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
-    cholesky(mat, k + 1); // L
+    cholesky<CLAMP>(mat, k + 1); // L
     matmul(mat + tri(k, 0), &fine_value, vec, k + 1, 1, 1);
     atomicAdd(b_xi + (idx - n0), vec[k]);
-    solve_cholesky_backward(mat, vec, k, 1); // (Lcc^T)^-1
+    solve_cholesky_backward<CLAMP>(mat, vec, k, 1); // (Lcc^T)^-1
     for (size_t i = 0; i < k; ++i) {
-        atomicAdd(b_values + nbr[i], vec[i]);
+        atomicAdd(b_values + neighbor_index<CLAMP>(nbr, nbr_row, i), vec[i]);
     }
 }
 
 // refine is linear in initial_values and xi, so we transpose with respect to those
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __host__ void refine_transpose(
     cudaStream_t stream,
     const f_t* points,
@@ -234,7 +250,7 @@ __host__ void refine_transpose(
         cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
-        refine_transpose_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
+        refine_transpose_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
             cov_bins,
@@ -254,7 +270,7 @@ __host__ void refine_transpose(
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(values_buffer, initial_values, n_batches, n_points, n0, n0);
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_jvp_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
@@ -310,23 +326,26 @@ __global__ void refine_jvp_kernel(
     vec[k] = b_xi[idx - n0];
     vec_tangent[k] = b_xi_tangent[idx - n0];
     
-    // reorder neighbors by pivoting
-    size_t nbr[MAX_K];
-    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    // with clamping, reorder neighbors by pivoting
+    const i_t* nbr_row = neighbors + (idx - n0) * k;
+    size_t nbr[CLAMP ? MAX_K : 1];
+    if constexpr (CLAMP) {
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    }
     for (size_t i = 0; i < k; ++i) {
-        vec[i] = b_values[nbr[i]];
-        vec_tangent[i] = b_values_tangent[nbr[i]];
+        vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
+        vec_tangent[i] = b_values_tangent[neighbor_index<CLAMP>(nbr, nbr_row, i)];
     }
 
     // load and factorize joint covariance, with jvp
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // K
     cov_lookup_matrix(pts, cov_bins, b_cov_vals_tangent, mat_tangent, k + 1, N_DIM, n_cov); // dK
-    cholesky(mat, k + 1); // L
-    cholesky_jvp(mat, mat_tangent, k + 1); // dL
+    cholesky<CLAMP>(mat, k + 1); // L
+    cholesky_jvp<CLAMP>(mat, mat_tangent, k + 1); // dL
 
     // compute values and linear jvp
-    solve_cholesky_forward(mat, vec, k, 1);
-    solve_cholesky_forward(mat, vec_tangent, k, 1);
+    solve_cholesky_forward<CLAMP>(mat, vec, k, 1);
+    solve_cholesky_forward<CLAMP>(mat, vec_tangent, k, 1);
     // b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // don't write values, we assume they are given
     b_values_tangent[idx] = dot(mat + tri(k, 0), vec_tangent, k + 1);
 
@@ -335,13 +354,13 @@ __global__ void refine_jvp_kernel(
 
     // nonlinear from inverse
     apply_cholesky(mat_tangent, vec, k, 1);
-    solve_cholesky_forward(mat, vec, k, 1);
+    solve_cholesky_forward<CLAMP>(mat, vec, k, 1);
     b_values_tangent[idx] -= dot(mat + tri(k, 0), vec, k);
 }
 
 
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __host__ void refine_jvp(
     cudaStream_t stream,
     const f_t* points,
@@ -373,7 +392,7 @@ __host__ void refine_jvp(
         cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
-        refine_jvp_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
+        refine_jvp_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
             cov_bins,
@@ -393,7 +412,7 @@ __host__ void refine_jvp(
     }
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>  
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>  
 __global__ void refine_vjp_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
@@ -449,24 +468,27 @@ __global__ void refine_vjp_kernel(
     vec[k] = b_xi[idx - n0];
     f_t fine_value_tangent = b_values_tangent[idx];
 
-    // reorder neighbors by pivoting
-    size_t nbr[MAX_K];
-    pivot_neighbors<MAX_K, N_DIM>(points, neighbors + (idx - n0) * k, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    // with clamping, reorder neighbors by pivoting
+    const i_t* nbr_row = neighbors + (idx - n0) * k;
+    size_t nbr[CLAMP ? MAX_K : 1];
+    if constexpr (CLAMP) {
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+    }
     for (size_t i = 0; i < k; ++i) {
-        vec[i] = b_values[nbr[i]];
+        vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
     }
 
     // factorize matrix and prepare intermediate vectors
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
-    cholesky(mat, k + 1); // L
-    solve_cholesky_forward(mat, vec, k, 1); // "xi_c"
+    cholesky<CLAMP>(mat, k + 1); // L
+    solve_cholesky_forward<CLAMP>(mat, vec, k, 1); // "xi_c"
     matmul(mat + tri(k, 0), &fine_value_tangent, vec_tangent, k + 1, 1, 1); // not actually the tangent of vec
-    solve_cholesky_backward(mat, vec_tangent, k, 1); // Lcc^-T
+    solve_cholesky_backward<CLAMP>(mat, vec_tangent, k, 1); // Lcc^-T
 
     // linear transpose
     atomicAdd(b_xi_tangent + (idx - n0), vec_tangent[k]);
     for (size_t i = 0; i < k; ++i) {
-        atomicAdd(b_values_tangent + nbr[i], vec_tangent[i]);
+        atomicAdd(b_values_tangent + neighbor_index<CLAMP>(nbr, nbr_row, i), vec_tangent[i]);
     }
 
     // covariance vjp
@@ -477,11 +499,11 @@ __global__ void refine_vjp_kernel(
             mat_tangent[tri(i, j)] = -vec_tangent[i] * vec[j]; // Lbar_cc
         }
     }
-    cholesky_vjp(mat, mat_tangent, k + 1);
+    cholesky_vjp<CLAMP>(mat, mat_tangent, k + 1);
     cov_lookup_matrix_vjp(pts, mat_tangent, cov_bins, b_cov_vals_tangent, k + 1, N_DIM, n_cov);
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __host__ void refine_vjp(
     cudaStream_t stream,
     const f_t* points,
@@ -515,7 +537,7 @@ __host__ void refine_vjp(
         cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         size_t n_threads = (end_idx - start_idx) * n_batches;
-        refine_vjp_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
+        refine_vjp_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
             cov_bins,

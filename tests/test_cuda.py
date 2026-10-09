@@ -301,3 +301,72 @@ def test_no_jitter_duplicates(dtype):
         # the density is degenerate when points are dropped
         assert gp.generate_logdet(graph, covariance, cuda=True) == -jnp.inf, "CUDA logdet should be -inf."
         assert gp.generate_logdet(graph, covariance, cuda=False) == -jnp.inf, "JAX logdet should be -inf."
+
+
+def test_unclamped(setup_graph):
+    # clamp=False selects the plain unpivoted kernels, which match the unclamped JAX path
+    graph, covariance, points = setup_graph
+    dtype = points.dtype
+    rtol, atol = _rtol(dtype), _atol(dtype)
+    xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
+    v = jr.normal(rng, (points.shape[0],)).astype(dtype)
+    cov_tangent = jr.normal(rng, covariance[1].shape).astype(dtype)
+
+    def forward(cov_vals, *, cuda, clamp):
+        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda, clamp=clamp)
+
+    jax_out, jax_jvp = jax.jvp(Partial(forward, cuda=False, clamp=False), (covariance[1],), (cov_tangent,))
+    cuda_out, cuda_jvp = jax.jvp(Partial(forward, cuda=True, clamp=False), (covariance[1],), (cov_tangent,))
+    assert jnp.allclose(jax_out, cuda_out, rtol=rtol, atol=atol), "Unclamped JAX and CUDA forward do not match."
+    assert jnp.allclose(jax_jvp, cuda_jvp, rtol=rtol, atol=atol), "Unclamped JAX and CUDA JVP do not match."
+    jax_vjp = jax.vjp(Partial(forward, cuda=False, clamp=False), covariance[1])[1](v)[0]
+    cuda_vjp = jax.vjp(Partial(forward, cuda=True, clamp=False), covariance[1])[1](v)[0]
+    vjp_rtol = 1e-5 if dtype == jnp.float32 else rtol
+    assert jnp.allclose(jax_vjp, cuda_vjp, rtol=vjp_rtol, atol=atol), "Unclamped JAX and CUDA VJP do not match."
+
+    clamped = forward(covariance[1], cuda=True, clamp=True)
+    assert jnp.allclose(clamped, cuda_out, rtol=rtol, atol=atol), "Clamped and unclamped CUDA do not match."
+
+    xi_back = gp.generate_inv(graph, covariance, cuda_out, cuda=True, clamp=False)
+    values_back = gp.generate(graph, covariance, xi_back, cuda=True, clamp=False)
+    assert jnp.allclose(cuda_out, values_back, rtol=rtol, atol=atol), "Unclamped CUDA inverse does not match."
+    logdet1 = gp.generate_logdet(graph, covariance, cuda=True, clamp=False)
+    logdet2 = gp.generate_logdet(graph, covariance, cuda=False, clamp=False)
+    assert jnp.isclose(logdet1, logdet2, rtol=rtol, atol=atol), "Unclamped log-determinants do not match."
+
+
+@pytest.mark.parametrize("clamp", [True, False])
+def test_clamp_flag_survives_transforms(clamp):
+    # with exact duplicates and no jitter, unclamped kernels give NaN and clamped ones do not, through every rule
+    points = jr.normal(rng, (900, 3))
+    points = jnp.concatenate([points, points[:100]])
+    graph = gp.build_graph(points, n0=100, k=10, cuda=True)
+    cov_bins, cov_vals = gp.extras.matern_kernel(p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000)
+    n0 = 100
+    initial_values = jr.normal(rng, (n0,))
+    xi = jr.normal(rng, (points.shape[0] - n0,))
+    v = jr.normal(rng, (points.shape[0],))
+
+    # call refine directly, since generate masks the whole output with NaN (and its tangent with zeros)
+    def forward(xi, cov_vals):
+        return gp.refine(
+            graph.points, graph.neighbors, graph.offsets, (cov_bins, cov_vals), initial_values, xi, cuda=True, clamp=clamp
+        )
+
+    results = {
+        "forward": forward(xi, cov_vals),
+        "jit": jax.jit(forward)(xi, cov_vals),
+        "vmap": jax.vmap(forward, in_axes=(0, None))(jnp.stack([xi, xi]), cov_vals),
+        "xi jvp": jax.jvp(forward, (xi, cov_vals), (v[n0:], jnp.zeros_like(cov_vals)))[1],
+        "cov jvp": jax.jvp(forward, (xi, cov_vals), (jnp.zeros_like(xi), jnp.ones_like(cov_vals)))[1],
+        "xi vjp": jax.vjp(forward, xi, cov_vals)[1](v)[0],
+        "cov vjp": jax.vjp(forward, xi, cov_vals)[1](v)[1],
+        "inverse": gp.refine_inv(
+            graph.points, graph.neighbors, graph.offsets, (cov_bins, cov_vals), v, cuda=True, clamp=clamp
+        )[1],
+    }
+    for name, r in results.items():
+        if clamp:
+            assert jnp.all(jnp.isfinite(r)), f"Clamped {name} produced non-finite values."
+        else:
+            assert jnp.any(jnp.isnan(r)), f"Unclamped {name} did not produce NaN, so clamp=False was not used."
