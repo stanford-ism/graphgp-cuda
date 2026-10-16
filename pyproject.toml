@@ -17,13 +17,18 @@ dev = [
     "jax[cuda13]",
     "pytest>=8.3.5",
     "ruff>=0.11.11",
+    # for rebuilding without build isolation, see the README
+    "scikit-build-core",
+    "cmake>=3.24",
+    "ninja",
 ]
 
 [project.urls]
 Source = "https://github.com/stanford-ism/graphgp-cuda"
 
 [build-system]
-requires = ["scikit-build-core", "jax"]
+# The pip CUDA 13 toolkit is found by CMakeLists.txt, so building needs no system CUDA installation
+requires = ["scikit-build-core", "jax", "nvidia-cuda-nvcc>=13,<14", "nvidia-cuda-runtime>=13,<14"]
 build-backend = "scikit_build_core.build"
 
 [tool.ruff]
