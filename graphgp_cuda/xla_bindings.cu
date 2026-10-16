@@ -157,8 +157,8 @@ Error refine_ffi_impl(
     Buffer<F32> points, // (N, d)
     Buffer<S32> neighbors, // (N - n0, k)
     Buffer<S32> offsets, // (B,) marking the ends of each batch
-    Buffer<F32> cov_bins, // (R,)
-    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> cov_rates, // (M,)
+    Buffer<F32> cov_amps, // (B1, B2, ..., M)
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values, // (B1, B2, ..., N)
@@ -167,15 +167,15 @@ Error refine_ffi_impl(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine<1,1,true,int,float>) dispatch = nullptr;
@@ -189,8 +189,8 @@ Error refine_ffi_impl(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         initial_values.typed_data(),
         xi.typed_data(),
         values->typed_data(),
@@ -198,7 +198,7 @@ Error refine_ffi_impl(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -212,8 +212,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // neighbors
         .Arg<Buffer<S32>>() // offsets
-        .Arg<Buffer<F32>>() // cov_bins
-        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // cov_rates
+        .Arg<Buffer<F32>>() // cov_amps
         .Arg<Buffer<F32>>() // initial_values
         .Arg<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values
@@ -227,8 +227,8 @@ Error refine_transpose_ffi_impl(
     Buffer<F32> points, // (N, d) in topological order
     Buffer<S32> neighbors, // (N - n0, k) in original order
     Buffer<S32> offsets, // (L,) marking the ends of each batch
-    Buffer<F32> cov_bins, // (R,)
-    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> cov_rates, // (M,)
+    Buffer<F32> cov_amps, // (B1, B2, ..., M)
     Buffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
@@ -238,15 +238,15 @@ Error refine_transpose_ffi_impl(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_transpose<1,1,true,int,float>) dispatch = nullptr;
@@ -260,8 +260,8 @@ Error refine_transpose_ffi_impl(
         points.typed_data(), 
         neighbors.typed_data(),
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         values.typed_data(),
         values_buffer->typed_data(),
         initial_values->typed_data(),
@@ -270,7 +270,7 @@ Error refine_transpose_ffi_impl(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -284,8 +284,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // neighbors
         .Arg<Buffer<S32>>() // offsets
-        .Arg<Buffer<F32>>() // cov_bins
-        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // cov_rates
+        .Arg<Buffer<F32>>() // cov_amps
         .Arg<Buffer<F32>>() // values
         .Ret<Buffer<F32>>() // initial_values
         .Ret<Buffer<F32>>() // xi
@@ -300,12 +300,12 @@ Error refine_jvp_ffi_impl(
     Buffer<F32> points, // (N, d)
     Buffer<S32> neighbors, // (N - n0, k)
     Buffer<S32> offsets, // (B,) marking the ends of each batch
-    Buffer<F32> cov_bins, // (R,)
-    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> cov_rates, // (M,)
+    Buffer<F32> cov_amps, // (B1, B2, ..., M)
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
     Buffer<F32> values, // (B1, B2, ..., N)
-    Buffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
+    Buffer<F32> cov_amps_tangent, // (B1, B2, ..., M)
     Buffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values_tangent,
@@ -314,15 +314,15 @@ Error refine_jvp_ffi_impl(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_jvp<1,1,true,int,float>) dispatch = nullptr;
@@ -336,11 +336,11 @@ Error refine_jvp_ffi_impl(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         xi.typed_data(),
         values.typed_data(),
-        cov_vals_tangent.typed_data(),
+        cov_amps_tangent.typed_data(),
         initial_values_tangent.typed_data(),
         xi_tangent.typed_data(),
         values_tangent->typed_data(),
@@ -348,7 +348,7 @@ Error refine_jvp_ffi_impl(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -362,12 +362,12 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // neighbors
         .Arg<Buffer<S32>>() // offsets
-        .Arg<Buffer<F32>>() // cov_bins
-        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // cov_rates
+        .Arg<Buffer<F32>>() // cov_amps
         .Arg<Buffer<F32>>() // initial_values
         .Arg<Buffer<F32>>() // xi
         .Arg<Buffer<F32>>() // values
-        .Arg<Buffer<F32>>() // cov_vals_tangent
+        .Arg<Buffer<F32>>() // cov_amps_tangent
         .Arg<Buffer<F32>>() // initial_values_tangent
         .Arg<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent
@@ -381,13 +381,13 @@ Error refine_vjp_ffi_impl(
     Buffer<F32> points, // (N, d)
     Buffer<S32> neighbors, // (N - n0, k)
     Buffer<S32> offsets, // (B,) marking the ends of each batch
-    Buffer<F32> cov_bins, // (R,)
-    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> cov_rates, // (M,)
+    Buffer<F32> cov_amps, // (B1, B2, ..., M)
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
     Buffer<F32> values, // (B1, B2, ..., N)
     Buffer<F32> values_tangent, // (B1, B2, ..., N)
-    ResultBuffer<F32> cov_vals_tangent, // (B1, B2, ..., R)
+    ResultBuffer<F32> cov_amps_tangent, // (B1, B2, ..., M)
     ResultBuffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
@@ -396,15 +396,15 @@ Error refine_vjp_ffi_impl(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_vjp<1,1,true,int,float>) dispatch = nullptr;
@@ -418,20 +418,20 @@ Error refine_vjp_ffi_impl(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         xi.typed_data(),
         values.typed_data(),
         values_tangent.typed_data(),
         values_tangent_buffer->typed_data(),
-        cov_vals_tangent->typed_data(),
+        cov_amps_tangent->typed_data(),
         initial_values_tangent->typed_data(),
         xi_tangent->typed_data(),
         n0,
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -445,13 +445,13 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // neighbors
         .Arg<Buffer<S32>>() // offsets
-        .Arg<Buffer<F32>>() // cov_bins
-        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // cov_rates
+        .Arg<Buffer<F32>>() // cov_amps
         .Arg<Buffer<F32>>() // initial_values
         .Arg<Buffer<F32>>() // xi
         .Arg<Buffer<F32>>() // values
         .Arg<Buffer<F32>>() // values_tangent
-        .Ret<Buffer<F32>>() // cov_vals_tangent
+        .Ret<Buffer<F32>>() // cov_amps_tangent
         .Ret<Buffer<F32>>() // initial_values_tangent
         .Ret<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent_buffer
@@ -465,8 +465,8 @@ Error refine_inv_ffi_impl(
     Buffer<F32> points, // (N, d)
     Buffer<S32> neighbors, // (N - n0, k)
     Buffer<S32> offsets, // (B,) marking the ends of each batch
-    Buffer<F32> cov_bins, // (R,)
-    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> cov_rates, // (M,)
+    Buffer<F32> cov_amps, // (B1, B2, ..., M)
     Buffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
@@ -475,15 +475,15 @@ Error refine_inv_ffi_impl(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_inv<1,1,true,int,float>) dispatch = nullptr;
@@ -497,8 +497,8 @@ Error refine_inv_ffi_impl(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         values.typed_data(),
         initial_values->typed_data(),
         xi->typed_data(),
@@ -506,7 +506,7 @@ Error refine_inv_ffi_impl(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -520,8 +520,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // neighbors
         .Arg<Buffer<S32>>() // offsets
-        .Arg<Buffer<F32>>() // cov_bins
-        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // cov_rates
+        .Arg<Buffer<F32>>() // cov_amps
         .Arg<Buffer<F32>>() // values
         .Ret<Buffer<F32>>() // initial_values
         .Ret<Buffer<F32>>() // xi
@@ -535,23 +535,23 @@ Error refine_logdet_ffi_impl(
     Buffer<F32> points, // (N, d)
     Buffer<S32> neighbors, // (N - n0, k)
     Buffer<S32> offsets, // (B,) marking the ends of each batch
-    Buffer<F32> cov_bins, // (R,)
-    Buffer<F32> cov_vals, // (B1, B2, ..., R)
+    Buffer<F32> cov_rates, // (M,)
+    Buffer<F32> cov_amps, // (B1, B2, ..., M)
     ResultBuffer<F32> logdet, // (B1, B2, ...)
     bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_logdet<1,1,true,int,float>) dispatch = nullptr;
@@ -565,14 +565,14 @@ Error refine_logdet_ffi_impl(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         logdet->typed_data(),
         n0,
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -586,8 +586,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // points
         .Arg<Buffer<S32>>() // neighbors
         .Arg<Buffer<S32>>() // offsets
-        .Arg<Buffer<F32>>() // cov_bins
-        .Arg<Buffer<F32>>() // cov_vals
+        .Arg<Buffer<F32>>() // cov_rates
+        .Arg<Buffer<F32>>() // cov_amps
         .Ret<Buffer<F32>>() // logdet
         .Attr<bool>("clamp")
 );
@@ -945,8 +945,8 @@ Error refine_ffi_impl_64(
     Buffer<F64> points, // (N, d)
     Buffer<S64> neighbors, // (N - n0, k)
     Buffer<S64> offsets, // (B,) marking the ends of each batch
-    Buffer<F64> cov_bins, // (R,)
-    Buffer<F64> cov_vals, // (B1, B2, ..., R)
+    Buffer<F64> cov_rates, // (M,)
+    Buffer<F64> cov_amps, // (B1, B2, ..., M)
     Buffer<F64> initial_values, // (B1, B2, ..., n0)
     Buffer<F64> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values, // (B1, B2, ..., N)
@@ -955,15 +955,15 @@ Error refine_ffi_impl_64(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine<1,1,true,int64_t,double>) dispatch = nullptr;
@@ -977,8 +977,8 @@ Error refine_ffi_impl_64(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         initial_values.typed_data(),
         xi.typed_data(),
         values->typed_data(),
@@ -986,7 +986,7 @@ Error refine_ffi_impl_64(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -1000,8 +1000,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // points
         .Arg<Buffer<S64>>() // neighbors
         .Arg<Buffer<S64>>() // offsets
-        .Arg<Buffer<F64>>() // cov_bins
-        .Arg<Buffer<F64>>() // cov_vals
+        .Arg<Buffer<F64>>() // cov_rates
+        .Arg<Buffer<F64>>() // cov_amps
         .Arg<Buffer<F64>>() // initial_values
         .Arg<Buffer<F64>>() // xi
         .Ret<Buffer<F64>>() // values
@@ -1015,8 +1015,8 @@ Error refine_transpose_ffi_impl_64(
     Buffer<F64> points, // (N, d) in topological order
     Buffer<S64> neighbors, // (N - n0, k) in original order
     Buffer<S64> offsets, // (L,) marking the ends of each batch
-    Buffer<F64> cov_bins, // (R,)
-    Buffer<F64> cov_vals, // (B1, B2, ..., R)
+    Buffer<F64> cov_rates, // (M,)
+    Buffer<F64> cov_amps, // (B1, B2, ..., M)
     Buffer<F64> values, // (B1, B2, ..., N)
     ResultBuffer<F64> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi, // (B1, B2, ..., N - n0)
@@ -1026,15 +1026,15 @@ Error refine_transpose_ffi_impl_64(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_transpose<1,1,true,int64_t,double>) dispatch = nullptr;
@@ -1048,8 +1048,8 @@ Error refine_transpose_ffi_impl_64(
         points.typed_data(), 
         neighbors.typed_data(),
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         values.typed_data(),
         values_buffer->typed_data(),
         initial_values->typed_data(),
@@ -1058,7 +1058,7 @@ Error refine_transpose_ffi_impl_64(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -1072,8 +1072,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // points
         .Arg<Buffer<S64>>() // neighbors
         .Arg<Buffer<S64>>() // offsets
-        .Arg<Buffer<F64>>() // cov_bins
-        .Arg<Buffer<F64>>() // cov_vals
+        .Arg<Buffer<F64>>() // cov_rates
+        .Arg<Buffer<F64>>() // cov_amps
         .Arg<Buffer<F64>>() // values
         .Ret<Buffer<F64>>() // initial_values
         .Ret<Buffer<F64>>() // xi
@@ -1088,12 +1088,12 @@ Error refine_jvp_ffi_impl_64(
     Buffer<F64> points, // (N, d)
     Buffer<S64> neighbors, // (N - n0, k)
     Buffer<S64> offsets, // (B,) marking the ends of each batch
-    Buffer<F64> cov_bins, // (R,)
-    Buffer<F64> cov_vals, // (B1, B2, ..., R)
+    Buffer<F64> cov_rates, // (M,)
+    Buffer<F64> cov_amps, // (B1, B2, ..., M)
     Buffer<F64> initial_values, // (B1, B2, ..., n0)
     Buffer<F64> xi, // (B1, B2, ..., N - n0)
     Buffer<F64> values, // (B1, B2, ..., N)
-    Buffer<F64> cov_vals_tangent, // (B1, B2, ..., R)
+    Buffer<F64> cov_amps_tangent, // (B1, B2, ..., M)
     Buffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values_tangent,
@@ -1102,15 +1102,15 @@ Error refine_jvp_ffi_impl_64(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_jvp<1,1,true,int64_t,double>) dispatch = nullptr;
@@ -1124,11 +1124,11 @@ Error refine_jvp_ffi_impl_64(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         xi.typed_data(),
         values.typed_data(),
-        cov_vals_tangent.typed_data(),
+        cov_amps_tangent.typed_data(),
         initial_values_tangent.typed_data(),
         xi_tangent.typed_data(),
         values_tangent->typed_data(),
@@ -1136,7 +1136,7 @@ Error refine_jvp_ffi_impl_64(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -1150,12 +1150,12 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // points
         .Arg<Buffer<S64>>() // neighbors
         .Arg<Buffer<S64>>() // offsets
-        .Arg<Buffer<F64>>() // cov_bins
-        .Arg<Buffer<F64>>() // cov_vals
+        .Arg<Buffer<F64>>() // cov_rates
+        .Arg<Buffer<F64>>() // cov_amps
         .Arg<Buffer<F64>>() // initial_values
         .Arg<Buffer<F64>>() // xi
         .Arg<Buffer<F64>>() // values
-        .Arg<Buffer<F64>>() // cov_vals_tangent
+        .Arg<Buffer<F64>>() // cov_amps_tangent
         .Arg<Buffer<F64>>() // initial_values_tangent
         .Arg<Buffer<F64>>() // xi_tangent
         .Ret<Buffer<F64>>() // values_tangent
@@ -1169,13 +1169,13 @@ Error refine_vjp_ffi_impl_64(
     Buffer<F64> points, // (N, d)
     Buffer<S64> neighbors, // (N - n0, k)
     Buffer<S64> offsets, // (B,) marking the ends of each batch
-    Buffer<F64> cov_bins, // (R,)
-    Buffer<F64> cov_vals, // (B1, B2, ..., R)
+    Buffer<F64> cov_rates, // (M,)
+    Buffer<F64> cov_amps, // (B1, B2, ..., M)
     Buffer<F64> initial_values, // (B1, B2, ..., n0)
     Buffer<F64> xi, // (B1, B2, ..., N - n0)
     Buffer<F64> values, // (B1, B2, ..., N)
     Buffer<F64> values_tangent, // (B1, B2, ..., N)
-    ResultBuffer<F64> cov_vals_tangent, // (B1, B2, ..., R)
+    ResultBuffer<F64> cov_amps_tangent, // (B1, B2, ..., M)
     ResultBuffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
@@ -1184,15 +1184,15 @@ Error refine_vjp_ffi_impl_64(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_vjp<1,1,true,int64_t,double>) dispatch = nullptr;
@@ -1206,20 +1206,20 @@ Error refine_vjp_ffi_impl_64(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         xi.typed_data(),
         values.typed_data(),
         values_tangent.typed_data(),
         values_tangent_buffer->typed_data(),
-        cov_vals_tangent->typed_data(),
+        cov_amps_tangent->typed_data(),
         initial_values_tangent->typed_data(),
         xi_tangent->typed_data(),
         n0,
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -1233,13 +1233,13 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // points
         .Arg<Buffer<S64>>() // neighbors
         .Arg<Buffer<S64>>() // offsets
-        .Arg<Buffer<F64>>() // cov_bins
-        .Arg<Buffer<F64>>() // cov_vals
+        .Arg<Buffer<F64>>() // cov_rates
+        .Arg<Buffer<F64>>() // cov_amps
         .Arg<Buffer<F64>>() // initial_values
         .Arg<Buffer<F64>>() // xi
         .Arg<Buffer<F64>>() // values
         .Arg<Buffer<F64>>() // values_tangent
-        .Ret<Buffer<F64>>() // cov_vals_tangent
+        .Ret<Buffer<F64>>() // cov_amps_tangent
         .Ret<Buffer<F64>>() // initial_values_tangent
         .Ret<Buffer<F64>>() // xi_tangent
         .Ret<Buffer<F64>>() // values_tangent_buffer
@@ -1253,8 +1253,8 @@ Error refine_inv_ffi_impl_64(
     Buffer<F64> points, // (N, d)
     Buffer<S64> neighbors, // (N - n0, k)
     Buffer<S64> offsets, // (B,) marking the ends of each batch
-    Buffer<F64> cov_bins, // (R,)
-    Buffer<F64> cov_vals, // (B1, B2, ..., R)
+    Buffer<F64> cov_rates, // (M,)
+    Buffer<F64> cov_amps, // (B1, B2, ..., M)
     Buffer<F64> values, // (B1, B2, ..., N)
     ResultBuffer<F64> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi, // (B1, B2, ..., N - n0)
@@ -1263,15 +1263,15 @@ Error refine_inv_ffi_impl_64(
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_inv<1,1,true,int64_t,double>) dispatch = nullptr;
@@ -1285,8 +1285,8 @@ Error refine_inv_ffi_impl_64(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         values.typed_data(),
         initial_values->typed_data(),
         xi->typed_data(),
@@ -1294,7 +1294,7 @@ Error refine_inv_ffi_impl_64(
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -1308,8 +1308,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // points
         .Arg<Buffer<S64>>() // neighbors
         .Arg<Buffer<S64>>() // offsets
-        .Arg<Buffer<F64>>() // cov_bins
-        .Arg<Buffer<F64>>() // cov_vals
+        .Arg<Buffer<F64>>() // cov_rates
+        .Arg<Buffer<F64>>() // cov_amps
         .Arg<Buffer<F64>>() // values
         .Ret<Buffer<F64>>() // initial_values
         .Ret<Buffer<F64>>() // xi
@@ -1323,23 +1323,23 @@ Error refine_logdet_ffi_impl_64(
     Buffer<F64> points, // (N, d)
     Buffer<S64> neighbors, // (N - n0, k)
     Buffer<S64> offsets, // (B,) marking the ends of each batch
-    Buffer<F64> cov_bins, // (R,)
-    Buffer<F64> cov_vals, // (B1, B2, ..., R)
+    Buffer<F64> cov_rates, // (M,)
+    Buffer<F64> cov_amps, // (B1, B2, ..., M)
     ResultBuffer<F64> logdet, // (B1, B2, ...)
     bool clamp
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
     size_t n_levels = offsets.dimensions()[0];
-    size_t n_cov = cov_bins.dimensions()[0];
+    size_t n_scales = cov_rates.dimensions()[0];
     size_t n0 = n_points - neighbors.dimensions()[0];
     size_t k = neighbors.dimensions()[1];
 
     // handle both unbatched and arbitrarily batched cases
     size_t n_batches = 1;
-    size_t n_batch_dims = cov_vals.dimensions().size() - 1;
+    size_t n_batch_dims = cov_amps.dimensions().size() - 1;
     for (size_t i = 0; i < n_batch_dims; ++i) {
-        n_batches *= cov_vals.dimensions()[i];
+        n_batches *= cov_amps.dimensions()[i];
     }
 
     decltype(&refine_logdet<1,1,true,int64_t,double>) dispatch = nullptr;
@@ -1353,14 +1353,14 @@ Error refine_logdet_ffi_impl_64(
         points.typed_data(),
         neighbors.typed_data(), 
         offsets.typed_data(),
-        cov_bins.typed_data(),
-        cov_vals.typed_data(),
+        cov_rates.typed_data(),
+        cov_amps.typed_data(),
         logdet->typed_data(),
         n0,
         k,
         n_points,
         n_levels,
-        n_cov,
+        n_scales,
         n_batches
     );
 
@@ -1374,8 +1374,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // points
         .Arg<Buffer<S64>>() // neighbors
         .Arg<Buffer<S64>>() // offsets
-        .Arg<Buffer<F64>>() // cov_bins
-        .Arg<Buffer<F64>>() // cov_vals
+        .Arg<Buffer<F64>>() // cov_rates
+        .Arg<Buffer<F64>>() // cov_amps
         .Ret<Buffer<F64>>() // logdet
         .Attr<bool>("clamp")
 );

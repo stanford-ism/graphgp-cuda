@@ -12,14 +12,14 @@ template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_logdet_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
-    const f_t* cov_bins, // (R,)
-    const f_t* cov_vals, // (B, R)
+    const f_t* cov_rates, // (M,)
+    const f_t* cov_amps, // (B, M)
     f_t* logdet, // (B,)
     size_t n0,
     size_t k,
     size_t n_points,
-    size_t n_cov,
-    size_t n_batches, // number of batches, affects cov_vals, xi, and values
+    size_t n_scales,
+    size_t n_batches, // number of batches, affects cov_amps, xi, and values
     size_t start_idx, // = offsets[level]
     size_t n_threads // = (end_idx - start_idx) * n_batches
 ) {
@@ -31,7 +31,7 @@ __global__ void refine_logdet_kernel(
     size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
 
     // batched memory access
-    const f_t *b_cov_vals = cov_vals + b * n_cov;
+    const f_t *b_cov_amps = cov_amps + b * n_scales;
     f_t *b_logdet = logdet + b;
 
     // define working variables, these should fit on register
@@ -55,11 +55,11 @@ __global__ void refine_logdet_kernel(
     const i_t* nbr_row = neighbors + (idx - n0) * k;
     size_t nbr[CLAMP ? MAX_K : 1];
     if constexpr (CLAMP) {
-        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_rates, b_cov_amps, pts, mat, nbr, k, n_scales);
     }
 
     // refinement operation
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
+    cov_matrix(pts, cov_rates, b_cov_amps, mat, k + 1, N_DIM, n_scales); // joint covariance
     cholesky<CLAMP>(mat, k + 1); // factorize
     atomicAdd(b_logdet, log(mat[tri(k, k)])); // logdet += log(std)
 }
@@ -72,15 +72,15 @@ __host__ void refine_logdet(
     const f_t* points,
     const i_t* neighbors,
     const i_t* offsets,
-    const f_t* cov_bins,
-    const f_t* cov_vals,
+    const f_t* cov_rates,
+    const f_t* cov_amps,
     f_t* logdet, // (B,)
     size_t n0,
     size_t k,
     size_t n_points,
     size_t n_levels,
-    size_t n_cov,
-    size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
+    size_t n_scales,
+    size_t n_batches // batch dim only affects cov_amps, initial_values, xi, and output values
 ) {
     // copy offsets to host
     i_t *offsets_host;
@@ -99,13 +99,13 @@ __host__ void refine_logdet(
         refine_logdet_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             logdet,
             n0,
             k,
             n_points,
-            n_cov,
+            n_scales,
             n_batches,
             start_idx,
             n_threads);

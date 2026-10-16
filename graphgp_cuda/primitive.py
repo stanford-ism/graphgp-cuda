@@ -39,24 +39,37 @@ refine_logdet_p = {
 # handlers as a static attribute, so every rule below forwards the primitive parameters.
 
 
-def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, *, clamp=True):
-    casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
+# The covariance is an isotropic Gaussian mixture, C(r) = sum_m cov_amps[..., m] * exp(-r^2 / (2 cov_scales[m]^2)). The
+# scales are shared and converted here to rates 1 / (2 scales^2) (inf for a zero-scale nugget), which is what the kernels
+# take. Derivatives are supported with respect to the amplitudes only, which may also carry batch dimensions.
+
+
+def _cov_rates_amps(cov_scales, cov_amps):
+    cov_scales, cov_amps = jnp.atleast_1d(cov_scales), jnp.atleast_1d(cov_amps)
+    return 0.5 / jnp.square(cov_scales), cov_amps
+
+
+def refine(points, neighbors, offsets, cov_scales, cov_amps, initial_values, xi, *, clamp=True):
+    cov_rates, cov_amps = _cov_rates_amps(cov_scales, cov_amps)
+    casted_args = _cast_all(points, neighbors, offsets, cov_rates, cov_amps, initial_values, xi)
     if casted_args[0].dtype == jnp.float64:
         return refine_p["64"].bind(*casted_args, clamp=bool(clamp))[0]
     else:
         return refine_p["32"].bind(*casted_args, clamp=bool(clamp))[0]
 
 
-def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values, *, clamp=True):
-    casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, values)
+def refine_inv(points, neighbors, offsets, cov_scales, cov_amps, values, *, clamp=True):
+    cov_rates, cov_amps = _cov_rates_amps(cov_scales, cov_amps)
+    casted_args = _cast_all(points, neighbors, offsets, cov_rates, cov_amps, values)
     if casted_args[0].dtype == jnp.float64:
         return refine_inv_p["64"].bind(*casted_args, clamp=bool(clamp))
     else:
         return refine_inv_p["32"].bind(*casted_args, clamp=bool(clamp))
 
 
-def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals, *, clamp=True):
-    casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals)
+def refine_logdet(points, neighbors, offsets, cov_scales, cov_amps, *, clamp=True):
+    cov_rates, cov_amps = _cov_rates_amps(cov_scales, cov_amps)
+    casted_args = _cast_all(points, neighbors, offsets, cov_rates, cov_amps)
     if casted_args[0].dtype == jnp.float64:
         return refine_logdet_p["64"].bind(*casted_args, clamp=bool(clamp))[0]
     else:
@@ -119,7 +132,7 @@ def initialize():
     def _register_for_mode(mode):
         dtype = jnp.float32 if mode == "32" else jnp.float64
 
-        def refine_abstract(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
+        def refine_abstract(points, neighbors, offsets, cov_rates, cov_amps, initial_values, xi):
             n = points.shape[0]
             batch_shape = initial_values.shape[:-1]
             return (ShapedArray(batch_shape + (n,), dtype),)
@@ -131,7 +144,7 @@ def initialize():
                 filled_tangents = tuple(ad.instantiate_zeros(t) for t in tangents[5:])
                 tangents_out = refine_p[mode].bind(*primals[:5], *filled_tangents, **params)
 
-            elif all(isinstance(t, ad.Zero) for t in tangents[:4]):  # covariance derivative
+            elif all(isinstance(t, ad.Zero) for t in tangents[:4]):  # amplitude derivative (scales must have zero tangent)
                 filled_tangents = tuple(ad.instantiate_zeros(t) for t in tangents[4:])
                 tangents_out = refine_jvp_p[mode].bind(*primals, primals_out[0], *filled_tangents, **params)
             else:
@@ -151,7 +164,7 @@ def initialize():
         )
 
         # Refine linear transpose
-        def refine_transpose_abstract(points, neighbors, offsets, cov_bins, cov_vals, values):
+        def refine_transpose_abstract(points, neighbors, offsets, cov_rates, cov_amps, values):
             n = points.shape[0]
             n0 = n - neighbors.shape[0]
             batch_shape = values.shape[:-1]
@@ -175,12 +188,12 @@ def initialize():
             points,
             neighbors,
             offsets,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             initial_values,
             xi,
             values,
-            cov_vals_tangent,
+            cov_amps_tangent,
             initial_values_tangent,
             xi_tangent,
         ):
@@ -202,15 +215,15 @@ def initialize():
             points,
             neighbors,
             offsets,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             initial_values,
             xi,
             values,
             values_tangent,
         ):
             return (
-                ShapedArray(cov_vals.shape, dtype),
+                ShapedArray(cov_amps.shape, dtype),
                 ShapedArray(initial_values.shape, dtype),
                 ShapedArray(xi.shape, dtype),
                 ShapedArray(values.shape, dtype),  # buffer
@@ -230,8 +243,8 @@ def initialize():
             points,
             neighbors,
             offsets,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             values,
         ):
             n = points.shape[0]
@@ -255,10 +268,10 @@ def initialize():
             points,
             neighbors,
             offsets,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
         ):
-            batch_shape = cov_vals.shape[:-1]
+            batch_shape = cov_amps.shape[:-1]
             return (ShapedArray(batch_shape, dtype),)  # logdet
 
         register_primitive(

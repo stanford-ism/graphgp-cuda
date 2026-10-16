@@ -24,10 +24,9 @@ def setup_graph(request):
 
         points = jr.normal(rng, (n_points, n_dim)).astype(dtype)
         graph = gp.build_graph(points, n0=n0, k=k, cuda=True)
-        covariance = gp.extras.matern_kernel(
-            p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000, jitter=1e-5
-        )
-        covariance = (covariance[0].astype(dtype), covariance[1].astype(dtype))
+        scales, amps = gp.extras.matern_kernel(nu=0.5, variance=1.0, scale=1.0, r_min=1e-4, r_max=1e2, n_scales=49)
+        # prepend a zero-scale (nugget) component as a small jitter
+        covariance = (jnp.concatenate([jnp.zeros(1), scales]).astype(dtype), jnp.concatenate([jnp.full(1, 1e-5), amps]).astype(dtype))
 
         yield graph, covariance, points
 
@@ -91,8 +90,8 @@ def test_full_jvp(setup_graph):
     dtype = points.dtype
     xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
 
-    def forward(xi, cov_vals, *, cuda):
-        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda)
+    def forward(xi, cov_amps, *, cuda):
+        return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=cuda)
 
     jax_jvp = jax.jvp(
         Partial(forward, cuda=False),
@@ -115,8 +114,8 @@ def test_full_vjp(setup_graph):
     xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
     v = jr.normal(rng, (points.shape[0],)).astype(dtype)
 
-    def forward(xi, cov_vals, *, cuda):
-        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda)
+    def forward(xi, cov_amps, *, cuda):
+        return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=cuda)
 
     jax_vjp = jax.vjp(Partial(forward, cuda=False), xi, covariance[1])
     cuda_vjp = jax.vjp(Partial(forward, cuda=True), xi, covariance[1])
@@ -134,8 +133,8 @@ def test_cov_jvp(setup_graph):
     dtype = points.dtype
     xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
 
-    def forward(cov_vals, *, cuda):
-        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda)
+    def forward(cov_amps, *, cuda):
+        return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=cuda)
 
     jax_jvp = jax.jvp(
         Partial(forward, cuda=False),
@@ -158,8 +157,8 @@ def test_cov_vjp(setup_graph):
     xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
     v = jr.normal(rng, (points.shape[0],)).astype(dtype)
 
-    def forward(cov_vals, *, cuda):
-        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda)
+    def forward(cov_amps, *, cuda):
+        return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=cuda)
 
     jax_vjp = jax.vjp(Partial(forward, cuda=False), covariance[1])
     cuda_vjp = jax.vjp(Partial(forward, cuda=True), covariance[1])
@@ -222,19 +221,19 @@ def test_full_adjoint(setup_graph):
 
     k1, k2, k3, k4 = jr.split(rng, 4)
     xi = jr.normal(k1, (points.shape[0],)).astype(dtype)
-    cov_vals = covariance[1]
+    cov_amps = covariance[1]
     xi_tangent = jr.normal(k2, (points.shape[0],)).astype(dtype)
-    cov_tangent = jr.normal(k3, cov_vals.shape).astype(dtype)
+    cov_tangent = jr.normal(k3, cov_amps.shape).astype(dtype)
     values_tangent = jr.normal(k4, (points.shape[0],)).astype(dtype)
 
-    def forward(xi, cov_vals):
-        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=True)
+    def forward(xi, cov_amps):
+        return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=True)
 
     val1 = jnp.dot(
         values_tangent,
-        jax.jvp(forward, (xi, cov_vals), (xi_tangent, cov_tangent))[1],
+        jax.jvp(forward, (xi, cov_amps), (xi_tangent, cov_tangent))[1],
     )
-    vjp_result = jax.vjp(forward, xi, cov_vals)[1](values_tangent)
+    vjp_result = jax.vjp(forward, xi, cov_amps)[1](values_tangent)
     val2 = jnp.dot(xi_tangent, vjp_result[0]) + jnp.dot(cov_tangent, vjp_result[1])
     rtol = _rtol(dtype)
     atol = _atol(dtype)
@@ -271,14 +270,14 @@ def test_no_jitter_duplicates(dtype):
         points = jr.normal(rng, (900, 3))
         points = jnp.concatenate([points, points[:100]]).astype(dtype)
         graph = gp.build_graph(points, n0=100, k=10, cuda=True)
-        covariance = gp.extras.matern_kernel(p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000)
+        covariance = gp.extras.matern_kernel(nu=0.5, variance=1.0, scale=1.0, r_min=1e-4, r_max=1e2, n_scales=49)
         covariance = (covariance[0].astype(dtype), covariance[1].astype(dtype))
         xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
         v = jr.normal(rng, (points.shape[0],)).astype(dtype)
         rtol, atol = _rtol(dtype), _atol(dtype)
 
-        def forward(xi, cov_vals, *, cuda):
-            return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda)
+        def forward(xi, cov_amps, *, cuda):
+            return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=cuda)
 
         jax_values, jax_vjp = jax.vjp(Partial(forward, cuda=False), xi, covariance[1])
         cuda_values, cuda_vjp = jax.vjp(Partial(forward, cuda=True), xi, covariance[1])
@@ -312,8 +311,8 @@ def test_unclamped(setup_graph):
     v = jr.normal(rng, (points.shape[0],)).astype(dtype)
     cov_tangent = jr.normal(rng, covariance[1].shape).astype(dtype)
 
-    def forward(cov_vals, *, cuda, clamp):
-        return gp.generate(graph, (covariance[0], cov_vals), xi, cuda=cuda, clamp=clamp)
+    def forward(cov_amps, *, cuda, clamp):
+        return gp.generate(graph, (covariance[0], cov_amps), xi, cuda=cuda, clamp=clamp)
 
     jax_out, jax_jvp = jax.jvp(Partial(forward, cuda=False, clamp=False), (covariance[1],), (cov_tangent,))
     cuda_out, cuda_jvp = jax.jvp(Partial(forward, cuda=True, clamp=False), (covariance[1],), (cov_tangent,))
@@ -341,28 +340,28 @@ def test_clamp_flag_survives_transforms(clamp):
     points = jr.normal(rng, (900, 3))
     points = jnp.concatenate([points, points[:100]])
     graph = gp.build_graph(points, n0=100, k=10, cuda=True)
-    cov_bins, cov_vals = gp.extras.matern_kernel(p=0, variance=1.0, cutoff=1.0, r_min=1e-4, r_max=10, n_bins=1000)
+    cov_scales, cov_amps = gp.extras.matern_kernel(nu=0.5, variance=1.0, scale=1.0, r_min=1e-4, r_max=1e2, n_scales=49)
     n0 = 100
     initial_values = jr.normal(rng, (n0,))
     xi = jr.normal(rng, (points.shape[0] - n0,))
     v = jr.normal(rng, (points.shape[0],))
 
     # call refine directly, since generate masks the whole output with NaN (and its tangent with zeros)
-    def forward(xi, cov_vals):
+    def forward(xi, cov_amps):
         return gp.refine(
-            graph.points, graph.neighbors, graph.offsets, (cov_bins, cov_vals), initial_values, xi, cuda=True, clamp=clamp
+            graph.points, graph.neighbors, graph.offsets, (cov_scales, cov_amps), initial_values, xi, cuda=True, clamp=clamp
         )
 
     results = {
-        "forward": forward(xi, cov_vals),
-        "jit": jax.jit(forward)(xi, cov_vals),
-        "vmap": jax.vmap(forward, in_axes=(0, None))(jnp.stack([xi, xi]), cov_vals),
-        "xi jvp": jax.jvp(forward, (xi, cov_vals), (v[n0:], jnp.zeros_like(cov_vals)))[1],
-        "cov jvp": jax.jvp(forward, (xi, cov_vals), (jnp.zeros_like(xi), jnp.ones_like(cov_vals)))[1],
-        "xi vjp": jax.vjp(forward, xi, cov_vals)[1](v)[0],
-        "cov vjp": jax.vjp(forward, xi, cov_vals)[1](v)[1],
+        "forward": forward(xi, cov_amps),
+        "jit": jax.jit(forward)(xi, cov_amps),
+        "vmap": jax.vmap(forward, in_axes=(0, None))(jnp.stack([xi, xi]), cov_amps),
+        "xi jvp": jax.jvp(forward, (xi, cov_amps), (v[n0:], jnp.zeros_like(cov_amps)))[1],
+        "cov jvp": jax.jvp(forward, (xi, cov_amps), (jnp.zeros_like(xi), jnp.ones_like(cov_amps)))[1],
+        "xi vjp": jax.vjp(forward, xi, cov_amps)[1](v)[0],
+        "cov vjp": jax.vjp(forward, xi, cov_amps)[1](v)[1],
         "inverse": gp.refine_inv(
-            graph.points, graph.neighbors, graph.offsets, (cov_bins, cov_vals), v, cuda=True, clamp=clamp
+            graph.points, graph.neighbors, graph.offsets, (cov_scales, cov_amps), v, cuda=True, clamp=clamp
         )[1],
     }
     for name, r in results.items():

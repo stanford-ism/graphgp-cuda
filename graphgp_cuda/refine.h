@@ -24,16 +24,16 @@ template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
 __forceinline__ __device__ void pivot_neighbors(
     const f_t* points, // (N, d)
     const i_t* neighbors_row, // (k,)
-    const f_t* cov_bins, // (R,)
-    const f_t* cov_vals, // (R,)
+    const f_t* cov_rates, // (M,)
+    const f_t* cov_amps, // (M,)
     f_t* pts, // (k + 1, d)
     f_t* mat, // (k + 1, k + 1) lower triangular
     size_t* nbr, // (k,)
     size_t k,
-    size_t n_cov
+    size_t n_scales
 ) {
     int perm[MAX_K + 1];
-    cov_lookup_matrix(pts, cov_bins, cov_vals, mat, k + 1, N_DIM, n_cov);
+    cov_matrix(pts, cov_rates, cov_amps, mat, k + 1, N_DIM, n_scales);
     pivot_order(mat, perm, (int)k + 1, (int)k);
     for (size_t i = 0; i < k; ++i) {
         nbr[i] = neighbors_row[perm[i]];
@@ -47,15 +47,15 @@ template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
-    const f_t* cov_bins, // (R,)
-    const f_t* cov_vals, // (B, R)
+    const f_t* cov_rates, // (M,)
+    const f_t* cov_amps, // (B, M)
     const f_t* xi, // (B, N - n0)
     f_t* values, // (B, N)
     size_t n0,
     size_t k,
     size_t n_points,
-    size_t n_cov,
-    size_t n_batches, // number of batches, affects cov_vals, xi, and values
+    size_t n_scales,
+    size_t n_batches, // number of batches, affects cov_amps, xi, and values
     size_t start_idx, // = offsets[level]
     size_t n_threads // = (end_idx - start_idx) * n_batches
 ) {
@@ -67,7 +67,7 @@ __global__ void refine_kernel(
     size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
 
     // batched memory access
-    const f_t *b_cov_vals = cov_vals + b * n_cov;
+    const f_t *b_cov_amps = cov_amps + b * n_scales;
     const f_t *b_xi = xi + b * (n_points - n0);
     f_t *b_values = values + b * n_points;
 
@@ -94,14 +94,14 @@ __global__ void refine_kernel(
     const i_t* nbr_row = neighbors + (idx - n0) * k;
     size_t nbr[CLAMP ? MAX_K : 1];
     if constexpr (CLAMP) {
-        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_rates, b_cov_amps, pts, mat, nbr, k, n_scales);
     }
     for (size_t i = 0; i < k; ++i) {
         vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
     }
 
     // refinement operation
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
+    cov_matrix(pts, cov_rates, b_cov_amps, mat, k + 1, N_DIM, n_scales); // joint covariance
     cholesky<CLAMP>(mat, k + 1); // factorize
     solve_cholesky_forward<CLAMP>(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
     b_values[idx] = dot(mat + tri(k, 0), vec, k + 1); // v = L @ xi
@@ -115,8 +115,8 @@ __host__ void refine(
     const f_t* points,
     const i_t* neighbors,
     const i_t* offsets,
-    const f_t* cov_bins,
-    const f_t* cov_vals,
+    const f_t* cov_rates,
+    const f_t* cov_amps,
     const f_t* initial_values,
     const f_t* xi,
     f_t* values,
@@ -124,8 +124,8 @@ __host__ void refine(
     size_t k,
     size_t n_points,
     size_t n_levels,
-    size_t n_cov,
-    size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
+    size_t n_scales,
+    size_t n_batches // batch dim only affects cov_amps, initial_values, xi, and output values
 ) {
     // copy initial values to output values
     batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values, values, n_batches, n0, n_points, n0);
@@ -140,14 +140,14 @@ __host__ void refine(
         refine_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             xi,
             values,
             n0,
             k,
             n_points,
-            n_cov,
+            n_scales,
             n_batches,
             start_idx,
             n_threads);
@@ -158,15 +158,15 @@ template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_transpose_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
-    const f_t* cov_bins, // (R,)
-    const f_t* cov_vals, // (B, R)
+    const f_t* cov_rates, // (M,)
+    const f_t* cov_amps, // (B, M)
     f_t* values, // (B, N)
     f_t* xi, // (B, N - n0)
     size_t n0,
     size_t k, 
     size_t n_points,
-    size_t n_cov,
-    size_t n_batches, // number of batches, affects cov_vals, values, and xi
+    size_t n_scales,
+    size_t n_batches, // number of batches, affects cov_amps, values, and xi
     size_t start_idx, // = offsets[level]
     size_t n_threads // = (end_idx - start_idx) * n_batches
 ) {
@@ -178,7 +178,7 @@ __global__ void refine_transpose_kernel(
     size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
 
     // batched memory access
-    const f_t *b_cov_vals = cov_vals + b * n_cov;
+    const f_t *b_cov_amps = cov_amps + b * n_scales;
     f_t *b_values = values + b * n_points;
     f_t *b_xi = xi + b * (n_points - n0);
 
@@ -205,11 +205,11 @@ __global__ void refine_transpose_kernel(
     const i_t* nbr_row = neighbors + (idx - n0) * k;
     size_t nbr[CLAMP ? MAX_K : 1];
     if constexpr (CLAMP) {
-        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_rates, b_cov_amps, pts, mat, nbr, k, n_scales);
     }
 
     // refinement operation transpose
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
+    cov_matrix(pts, cov_rates, b_cov_amps, mat, k + 1, N_DIM, n_scales); // joint covariance
     cholesky<CLAMP>(mat, k + 1); // L
     matmul(mat + tri(k, 0), &fine_value, vec, k + 1, 1, 1);
     atomicAdd(b_xi + (idx - n0), vec[k]);
@@ -226,8 +226,8 @@ __host__ void refine_transpose(
     const f_t* points,
     const i_t* neighbors,
     const i_t* offsets,
-    const f_t* cov_bins,
-    const f_t* cov_vals,
+    const f_t* cov_rates,
+    const f_t* cov_amps,
     const f_t* values,
     f_t* values_buffer,
     f_t* initial_values,
@@ -236,8 +236,8 @@ __host__ void refine_transpose(
     size_t k,
     size_t n_points,
     size_t n_levels,
-    size_t n_cov,
-    size_t n_batches // batch dim only affects cov_vals, values, and all output buffers
+    size_t n_scales,
+    size_t n_batches // batch dim only affects cov_amps, values, and all output buffers
 ) {
     // initialize output arrays
     cudaMemcpyAsync(values_buffer, values, n_batches * n_points * sizeof(f_t), cudaMemcpyDeviceToDevice, stream);
@@ -253,14 +253,14 @@ __host__ void refine_transpose(
         refine_transpose_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             values_buffer,
             xi,
             n0,
             k,
             n_points,
-            n_cov,
+            n_scales,
             n_batches,
             start_idx,
             n_threads);
@@ -274,18 +274,18 @@ template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_jvp_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
-    const f_t* cov_bins, // (R,)
-    const f_t* cov_vals, // (B, R)
-    const f_t* xi, // (B, R)
-    const f_t* values, // (B, R)
-    const f_t* cov_vals_tangent, // (B, R)
-    const f_t* xi_tangent, // (B, R)
-    f_t* values_tangent, // (B, R)
+    const f_t* cov_rates, // (M,)
+    const f_t* cov_amps, // (B, M)
+    const f_t* xi, // (B, N - n0)
+    const f_t* values, // (B, N)
+    const f_t* cov_amps_tangent, // (B, M)
+    const f_t* xi_tangent, // (B, N - n0)
+    f_t* values_tangent, // (B, N)
     size_t n0,
     size_t k,
     size_t n_points,
-    size_t n_cov,
-    size_t n_batches, // number of batches, affects cov_vals, xi, and values
+    size_t n_scales,
+    size_t n_batches, // number of batches, affects cov_amps, xi, and values
     size_t start_idx, // = offsets[level]
     size_t n_threads // = (end_idx - start_idx) * n_batches
 ) {
@@ -297,9 +297,9 @@ __global__ void refine_jvp_kernel(
     size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
 
     // batched memory access
-    const f_t *b_cov_vals = cov_vals + b * n_cov;
+    const f_t *b_cov_amps = cov_amps + b * n_scales;
     const f_t *b_xi = xi + b * (n_points - n0);
-    const f_t *b_cov_vals_tangent = cov_vals_tangent + b * n_cov;
+    const f_t *b_cov_amps_tangent = cov_amps_tangent + b * n_scales;
     const f_t *b_xi_tangent = xi_tangent + b * (n_points - n0);
     const f_t *b_values = values + b * n_points;
     f_t *b_values_tangent = values_tangent + b * n_points;
@@ -330,7 +330,7 @@ __global__ void refine_jvp_kernel(
     const i_t* nbr_row = neighbors + (idx - n0) * k;
     size_t nbr[CLAMP ? MAX_K : 1];
     if constexpr (CLAMP) {
-        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_rates, b_cov_amps, pts, mat, nbr, k, n_scales);
     }
     for (size_t i = 0; i < k; ++i) {
         vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
@@ -338,8 +338,8 @@ __global__ void refine_jvp_kernel(
     }
 
     // load and factorize joint covariance, with jvp
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // K
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals_tangent, mat_tangent, k + 1, N_DIM, n_cov); // dK
+    cov_matrix(pts, cov_rates, b_cov_amps, mat, k + 1, N_DIM, n_scales); // K
+    cov_matrix(pts, cov_rates, b_cov_amps_tangent, mat_tangent, k + 1, N_DIM, n_scales); // dK
     cholesky<CLAMP>(mat, k + 1); // L
     cholesky_jvp<CLAMP>(mat, mat_tangent, k + 1); // dL
 
@@ -366,11 +366,11 @@ __host__ void refine_jvp(
     const f_t* points,
     const i_t* neighbors,
     const i_t* offsets,
-    const f_t* cov_bins,
-    const f_t* cov_vals,
+    const f_t* cov_rates,
+    const f_t* cov_amps,
     const f_t* xi,
     const f_t* values,
-    const f_t* cov_vals_tangent,
+    const f_t* cov_amps_tangent,
     const f_t* initial_values_tangent,
     const f_t* xi_tangent,
     f_t* values_tangent,
@@ -378,8 +378,8 @@ __host__ void refine_jvp(
     size_t k,
     size_t n_points,
     size_t n_levels,
-    size_t n_cov,
-    size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
+    size_t n_scales,
+    size_t n_batches // batch dim only affects cov_amps, initial_values, xi, and output values
 ) {
     // copy initial values to output values
     // batch_copy<<<cld(n_batches * n0, 256), 256, 0, stream>>>(initial_values, values, n_batches, n0, n_points, n0); // don't copy any values, we assume they are given
@@ -395,17 +395,17 @@ __host__ void refine_jvp(
         refine_jvp_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             xi,
             values,
-            cov_vals_tangent,
+            cov_amps_tangent,
             xi_tangent,
             values_tangent,
             n0,
             k,
             n_points,
-            n_cov,
+            n_scales,
             n_batches,
             start_idx,
             n_threads);
@@ -416,18 +416,18 @@ template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
 __global__ void refine_vjp_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
-    const f_t* cov_bins, // (R,)
-    const f_t* cov_vals, // (B, R)
+    const f_t* cov_rates, // (M,)
+    const f_t* cov_amps, // (B, M)
     const f_t* xi, // (B, N - n0)
     const f_t* values, // (B, N)
-    f_t* cov_vals_tangent, // (B, R)
+    f_t* cov_amps_tangent, // (B, M)
     f_t* values_tangent, // (B, N)
     f_t* xi_tangent, // (B, N - n0)
     size_t n0,
     size_t k, 
     size_t n_points,
-    size_t n_cov,
-    size_t n_batches, // number of batches, affects cov_vals, values_tangent, and xi_tangent
+    size_t n_scales,
+    size_t n_batches, // number of batches, affects cov_amps, values_tangent, and xi_tangent
     size_t start_idx, // = offsets[level]
     size_t n_threads // = (end_idx - start_idx) * n_batches
 ) {
@@ -439,10 +439,10 @@ __global__ void refine_vjp_kernel(
     size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
 
     // batched memory access
-    const f_t* b_cov_vals = cov_vals + b * n_cov;
+    const f_t* b_cov_amps = cov_amps + b * n_scales;
     const f_t* b_xi = xi + b * (n_points - n0);
     const f_t* b_values = values + b * n_points;
-    f_t* b_cov_vals_tangent = cov_vals_tangent + b * n_cov;
+    f_t* b_cov_amps_tangent = cov_amps_tangent + b * n_scales;
     f_t* b_values_tangent = values_tangent + b * n_points;
     f_t* b_xi_tangent = xi_tangent + b * (n_points - n0);
 
@@ -472,14 +472,14 @@ __global__ void refine_vjp_kernel(
     const i_t* nbr_row = neighbors + (idx - n0) * k;
     size_t nbr[CLAMP ? MAX_K : 1];
     if constexpr (CLAMP) {
-        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_bins, b_cov_vals, pts, mat, nbr, k, n_cov);
+        pivot_neighbors<MAX_K, N_DIM>(points, nbr_row, cov_rates, b_cov_amps, pts, mat, nbr, k, n_scales);
     }
     for (size_t i = 0; i < k; ++i) {
         vec[i] = b_values[neighbor_index<CLAMP>(nbr, nbr_row, i)];
     }
 
     // factorize matrix and prepare intermediate vectors
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
+    cov_matrix(pts, cov_rates, b_cov_amps, mat, k + 1, N_DIM, n_scales); // joint covariance
     cholesky<CLAMP>(mat, k + 1); // L
     solve_cholesky_forward<CLAMP>(mat, vec, k, 1); // "xi_c"
     matmul(mat + tri(k, 0), &fine_value_tangent, vec_tangent, k + 1, 1, 1); // not actually the tangent of vec
@@ -500,7 +500,7 @@ __global__ void refine_vjp_kernel(
         }
     }
     cholesky_vjp<CLAMP>(mat, mat_tangent, k + 1);
-    cov_lookup_matrix_vjp(pts, mat_tangent, cov_bins, b_cov_vals_tangent, k + 1, N_DIM, n_cov);
+    cov_matrix_vjp(pts, mat_tangent, cov_rates, b_cov_amps_tangent, mat, k + 1, N_DIM, n_scales);
 }
 
 template <size_t MAX_K, size_t N_DIM, bool CLAMP, typename i_t, typename f_t>
@@ -509,26 +509,26 @@ __host__ void refine_vjp(
     const f_t* points,
     const i_t* neighbors,
     const i_t* offsets,
-    const f_t* cov_bins,
-    const f_t* cov_vals,
+    const f_t* cov_rates,
+    const f_t* cov_amps,
     const f_t* xi,
     const f_t* values,
     const f_t* values_tangent,
     f_t* values_tangent_buffer,
-    f_t* cov_vals_tangent,
+    f_t* cov_amps_tangent,
     f_t* initial_values_tangent,
     f_t* xi_tangent,
     size_t n0,
     size_t k,
     size_t n_points,
     size_t n_levels,
-    size_t n_cov,
-    size_t n_batches // batch dim only affects cov_vals, values_tangent, and all output buffers
+    size_t n_scales,
+    size_t n_batches // batch dim only affects cov_amps, values_tangent, and all output buffers
 ) {
     // initialize output arrays
     cudaMemcpyAsync(values_tangent_buffer, values_tangent, n_batches * n_points * sizeof(f_t), cudaMemcpyDeviceToDevice, stream);
     cudaMemsetAsync(xi_tangent, 0, n_batches * (n_points - n0) * sizeof(f_t), stream);
-    cudaMemsetAsync(cov_vals_tangent, 0, n_batches * n_cov * sizeof(f_t), stream);
+    cudaMemsetAsync(cov_amps_tangent, 0, n_batches * n_scales * sizeof(f_t), stream);
 
     // walk backwards through levels and compute tangents
     i_t start_idx;
@@ -540,17 +540,17 @@ __host__ void refine_vjp(
         refine_vjp_kernel<MAX_K, N_DIM, CLAMP, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
             points,
             neighbors,
-            cov_bins,
-            cov_vals,
+            cov_rates,
+            cov_amps,
             xi,
             values,
-            cov_vals_tangent,
+            cov_amps_tangent,
             values_tangent_buffer,
             xi_tangent,
             n0,
             k,
             n_points,
-            n_cov,
+            n_scales,
             n_batches,
             start_idx,
             n_threads);
