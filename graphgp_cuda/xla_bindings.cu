@@ -24,6 +24,35 @@ using xla::ffi::S32;
 using xla::ffi::F64;
 using xla::ffi::S64;
 
+#ifdef GRAPHGP_CUDA_DEV_BUILD
+// development build: only a few instantiations, see GRAPHGP_CUDA_DEV_BUILD in CMakeLists.txt
+#define DISPATCH_K_DIM(DEST, FUNC) \
+    if (n_dim == 2) { \
+        if      (k <= 8)  DEST = FUNC<8,  2>; \
+        else if (k <= 16) DEST = FUNC<16, 2>; \
+        else throw std::runtime_error("development build only compiled for k <= 16"); \
+    } else if (n_dim == 3) { \
+        if      (k <= 8)  DEST = FUNC<8,  3>; \
+        else if (k <= 16) DEST = FUNC<16, 3>; \
+        else throw std::runtime_error("development build only compiled for k <= 16"); \
+    } else { \
+        throw std::runtime_error("development build only compiled for n_dim in {2, 3}"); \
+    }
+
+#define DISPATCH_K_DIM_CLAMP(DEST, FUNC, CLAMP) \
+    if (n_dim == 2) { \
+        if      (k <= 8)  DEST = FUNC<8, 2, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 2, CLAMP>; \
+        else throw std::runtime_error("development build only compiled for k <= 16"); \
+    } else if (n_dim == 3) { \
+        if      (k <= 8)  DEST = FUNC<8, 3, CLAMP>; \
+        else if (k <= 16) DEST = FUNC<16, 3, CLAMP>; \
+        else throw std::runtime_error("development build only compiled for k <= 16"); \
+    } else { \
+        throw std::runtime_error("development build only compiled for n_dim in {2, 3}"); \
+    }
+
+#else
 #define DISPATCH_K_DIM(DEST, FUNC) \
     if (n_dim == 1) { \
         if      (k <= 4)  DEST = FUNC<4,  1>; \
@@ -118,6 +147,8 @@ using xla::ffi::S64;
     } else { \
         throw std::runtime_error("only compiled for 1 <= n_dim <= 6"); \
     }
+
+#endif // GRAPHGP_CUDA_DEV_BUILD
 
 // ==================== REFINE OPERATIONS ====================
 
