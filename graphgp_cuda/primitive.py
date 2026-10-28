@@ -32,6 +32,10 @@ refine_logdet_p = {
     "32": Primitive("graphgp_cuda_refine_logdet_32"),
     "64": Primitive("graphgp_cuda_refine_logdet_64"),
 }
+refine_level_p = {m: Primitive(f"graphgp_cuda_refine_level_{m}") for m in ("32", "64")}
+refine_level_transpose_p = {m: Primitive(f"graphgp_cuda_refine_level_transpose_{m}") for m in ("32", "64")}
+refine_level_jvp_p = {m: Primitive(f"graphgp_cuda_refine_level_jvp_{m}") for m in ("32", "64")}
+refine_level_vjp_p = {m: Primitive(f"graphgp_cuda_refine_level_vjp_{m}") for m in ("32", "64")}
 
 
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
@@ -56,6 +60,28 @@ def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
         return refine_logdet_p["64"].bind(*casted_args)[0]
     else:
         return refine_logdet_p["32"].bind(*casted_args)[0]
+
+
+def refine_level(points_global, points_local, neighbors, levels, level, cov_bins, cov_vals, values_global, xi, values_local):
+    """One level of refinement in an arbitrary point order (distributed generation).
+
+    Args:
+        points_global: All points of shape ``(N, d)`` (replicated on every device).
+        points_local: The points handled here, ``(M, d)``.
+        neighbors: Their neighbors as indices into ``points_global``, ``(M, k)``.
+        levels: Level of every local point, ``(M,)``; the initial points have level 0.
+        level: The level to refine, an integer array of shape ``(1,)``.
+        cov_bins, cov_vals: Discretized covariance (``cov_vals`` may have leading batch dims).
+        values_global: Current values of all points, ``(..., N)`` (gathered before the call).
+        xi: Excitations of the local points, ``(..., M)``.
+        values_local: Current values of the local points, ``(..., M)``.
+
+    Returns:
+        The local values with the points of ``level`` refined, ``(..., M)``.
+    """
+    args = _cast_all(points_global, points_local, neighbors, levels, level, cov_bins, cov_vals, values_global, xi, values_local)
+    mode = "64" if args[0].dtype == jnp.float64 else "32"
+    return refine_level_p[mode].bind(*args)[0]
 
 
 def _determine_dtype(*args):
@@ -99,6 +125,10 @@ def initialize():
         "build_graph",
         "sort",
         "sort_three",
+        "refine_level",
+        "refine_level_transpose",
+        "refine_level_jvp",
+        "refine_level_vjp",
     ]:
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi_32",
@@ -264,8 +294,86 @@ def initialize():
             platform="gpu",
         )
 
+    def _register_level_for_mode(mode):
+        dtype = jnp.float32 if mode == "32" else jnp.float64
+        # argument indices: 0 points_global, 1 points_local, 2 neighbors, 3 levels, 4 level,
+        # 5 cov_bins, 6 cov_vals, 7 values_global, 8 xi, 9 values_local
+
+        def level_abstract(pg, pl, nb, lv, level, cb, cv, vg, xi, vl):
+            return (ShapedArray(vl.shape, dtype),)
+
+        def level_value_and_jvp(primals, tangents):
+            primals_out = refine_level_p[mode].bind(*primals)
+            if all(isinstance(t, ad.Zero) for t in tangents[:7]):  # linear case
+                filled = tuple(ad.instantiate_zeros(t) for t in tangents[7:])
+                tangents_out = refine_level_p[mode].bind(*primals[:7], *filled)
+            elif all(isinstance(t, ad.Zero) for t in tangents[:6]):  # covariance tangent
+                filled = tuple(ad.instantiate_zeros(t) for t in tangents[6:])
+                tangents_out = refine_level_jvp_p[mode].bind(*primals, *filled)
+            else:
+                nonzero = tuple(i for i, t in enumerate(tangents) if not isinstance(t, ad.Zero))
+                raise NotImplementedError(f"JVP not supported for non-Zero tangents {nonzero}.")
+            return primals_out, tangents_out
+
+        register_primitive(
+            refine_level_p[mode],
+            ffi_name=f"graphgp_cuda_refine_level_ffi_{mode}",
+            abstract=level_abstract,
+            batch_args=(6, 7, 8, 9),
+            transposes=[(refine_level_transpose_p[mode], (7, 8, 9))],
+            jvp_rule=level_value_and_jvp,
+            platform="gpu",
+        )
+
+        def level_transpose_abstract(pg, pl, nb, lv, level, cb, cv, out_t):
+            batch_shape = out_t.shape[:-1]
+            return (
+                ShapedArray(batch_shape + (pg.shape[0],), dtype),  # values_global tangent
+                ShapedArray(out_t.shape, dtype),  # xi tangent
+                ShapedArray(out_t.shape, dtype),  # values_local tangent
+            )
+
+        register_primitive(
+            refine_level_transpose_p[mode],
+            ffi_name=f"graphgp_cuda_refine_level_transpose_ffi_{mode}",
+            abstract=level_transpose_abstract,
+            batch_args=(6, 7),
+            transposes=[(refine_level_p[mode], (7,))],
+            platform="gpu",
+        )
+
+        def level_jvp_abstract(pg, pl, nb, lv, level, cb, cv, vg, xi, vl, cv_t, vg_t, xi_t, vl_t):
+            return (ShapedArray(vl.shape, dtype),)
+
+        register_primitive(
+            refine_level_jvp_p[mode],
+            ffi_name=f"graphgp_cuda_refine_level_jvp_ffi_{mode}",
+            abstract=level_jvp_abstract,
+            batch_args=(6, 7, 8, 9, 10, 11, 12, 13),
+            transposes=[(refine_level_vjp_p[mode], (10, 11, 12, 13))],
+            platform="gpu",
+        )
+
+        def level_vjp_abstract(pg, pl, nb, lv, level, cb, cv, vg, xi, vl, out_t):
+            return (
+                ShapedArray(cv.shape, dtype),
+                ShapedArray(vg.shape, dtype),
+                ShapedArray(xi.shape, dtype),
+                ShapedArray(vl.shape, dtype),
+            )
+
+        register_primitive(
+            refine_level_vjp_p[mode],
+            ffi_name=f"graphgp_cuda_refine_level_vjp_ffi_{mode}",
+            abstract=level_vjp_abstract,
+            batch_args=(6, 7, 8, 9, 10),
+            transposes=[(refine_level_jvp_p[mode], (10,))],
+            platform="gpu",
+        )
+
     for mode in ["32", "64"]:
         _register_for_mode(mode)
+        _register_level_for_mode(mode)
 
 
 # ===================== Automatic custom primitive registration =====================
