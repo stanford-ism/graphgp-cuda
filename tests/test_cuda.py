@@ -260,3 +260,45 @@ def test_logdet(setup_graph):
     assert jnp.isclose(logdet1, logdet2, rtol=_rtol(points.dtype), atol=_atol(points.dtype)), (
         "Log-determinants from JAX and CUDA do not match."
     )
+
+
+def test_refine_level(setup_graph):
+    """``graphgp_cuda.refine_level`` applied level by level in the graph's order matches the pure JAX
+    generation, and its derivatives with respect to the excitations and the covariance values are the
+    transposes of each other (the kernel carries its own vjp)."""
+    import graphgp_cuda
+
+    graph, covariance, _points = setup_graph
+    dtype = graph.points.dtype
+    n = graph.points.shape[0]
+    n0 = graph.offsets[0]
+    k = graph.neighbors.shape[1]
+    xi = jr.normal(rng, (n,)).astype(dtype)
+    with jax.enable_x64(dtype == jnp.float64):
+        expected = gp.generate(graph, covariance, xi, cuda=False, fast_jit=False)[graph.indices]
+        xi_tree = xi[graph.indices]
+        levels = jnp.zeros(n, dtype=jnp.int32)
+        for l in range(1, len(graph.offsets)):
+            levels = levels.at[graph.offsets[l - 1] : graph.offsets[l]].set(l)
+        neighbors = jnp.concatenate([jnp.zeros((n0, k), graph.neighbors.dtype), graph.neighbors], axis=0)
+        cov_bins, cov_vals = covariance
+
+        def run(xi_tree, cov_vals):
+            values = jnp.zeros(n, dtype).at[:n0].set(gp.generate_dense(graph.points[:n0], (cov_bins, cov_vals), xi_tree[:n0]))
+            for l in range(1, len(graph.offsets)):
+                values = graphgp_cuda.refine_level(
+                    graph.points, graph.points, neighbors, levels, jnp.array([l], dtype=jnp.int32), cov_bins, cov_vals,
+                    values, xi_tree, values,
+                )
+            return values
+
+        values = jax.jit(run)(xi_tree, cov_vals)
+        assert jnp.allclose(values, expected, rtol=_rtol(dtype), atol=_atol(dtype))
+        v_xi = jr.normal(jr.key(1), xi.shape).astype(dtype)
+        v_cov = (jr.normal(jr.key(2), cov_vals.shape) * 1e-2).astype(dtype)
+        w = jr.normal(jr.key(3), (n,)).astype(dtype)
+        _, jv = jax.jvp(run, (xi_tree, cov_vals), (v_xi, v_cov))
+        _, vjp = jax.vjp(run, xi_tree, cov_vals)
+        ct_xi, ct_cov = vjp(w)
+        lhs, rhs = jnp.vdot(jv, w), jnp.vdot(v_xi, ct_xi) + jnp.vdot(v_cov, ct_cov)
+        assert jnp.allclose(lhs, rhs, rtol=100 * _rtol(dtype))
