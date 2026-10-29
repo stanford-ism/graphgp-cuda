@@ -120,6 +120,7 @@ def initialize():
         "build_tree",
         "query_preceding_neighbors",
         "query_neighbors",
+        "query_neighbors_radius",
         "compute_depths_parallel",
         "order_by_depth",
         "build_graph",
@@ -522,6 +523,19 @@ def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
         jax.ShapeDtypeStruct((query_indices.shape[0], k), int_dtype),
     )
     neighbors = call(*_cast_all(points, split_dims, query_indices, max_indices))
+    return neighbors
+
+
+@Partial(jax.jit, static_argnames=("k"))
+def query_neighbors_radius(points, split_dims, query_indices, max_indices, max_square_distances, *, k):
+    """Like ``query_neighbors`` with a per-query initial square search radius: only points closer than
+    the radius are visited and returned, unfilled slots are -1."""
+    int_dtype, float_dtype, mode = _determine_dtype(points, split_dims, query_indices, max_indices, max_square_distances)
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_query_neighbors_radius_ffi" + mode,
+        jax.ShapeDtypeStruct((query_indices.shape[0], k), int_dtype),
+    )
+    neighbors = call(*_cast_all(points, split_dims, query_indices, max_indices, max_square_distances))
     return neighbors
 
 

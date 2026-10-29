@@ -302,3 +302,34 @@ def test_refine_level(setup_graph):
         ct_xi, ct_cov = vjp(w)
         lhs, rhs = jnp.vdot(jv, w), jnp.vdot(v_xi, ct_xi) + jnp.vdot(v_cov, ct_cov)
         assert jnp.allclose(lhs, rhs, rtol=100 * _rtol(dtype))
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64], ids=["f32", "f64"])
+def test_query_neighbors_radius(dtype):
+    """The radius-limited query equals a brute force (half of the k nearest inside the radius) and,
+    with an infinite radius, the unbounded CUDA query."""
+    import numpy as np
+    import graphgp_cuda
+
+    with jax.enable_x64(dtype == jnp.float64):
+        n_points, n_dim, k, n0 = 4000, 3, 8, 30
+        points, split_dims, _ = gp.build_tree(jr.normal(rng, (n_points, n_dim)).astype(dtype), cuda=True)
+        query_indices = jnp.arange(n0, n_points, dtype=split_dims.dtype)
+        p = np.asarray(points, dtype=np.float64)
+        pairwise = np.linalg.norm(p[:, None, :] - p[None, :, :], axis=-1)
+        i, j = np.indices(pairwise.shape)
+        pairwise[i <= j] = np.inf
+        pairwise = pairwise[n0:]
+        true_neighbors = np.argsort(pairwise, axis=-1)[:, :k]
+        true_distances = np.take_along_axis(pairwise, true_neighbors, axis=-1)
+        radius = 0.5 * (true_distances[:, k // 2 - 1] + true_distances[:, k // 2])
+        neighbors = graphgp_cuda.query_neighbors_radius(
+            points, split_dims, query_indices, query_indices, jnp.asarray(radius**2, dtype=dtype), k=k
+        )
+        expected = np.where(true_distances < radius[:, None], true_neighbors, -1)
+        assert np.array_equal(np.asarray(neighbors), expected), "radius-limited neighbors differ from brute force"
+        unbounded = graphgp_cuda.query_neighbors(points, split_dims, query_indices, query_indices, k=k)
+        inf = graphgp_cuda.query_neighbors_radius(
+            points, split_dims, query_indices, query_indices, jnp.full(query_indices.shape, jnp.inf, dtype=dtype), k=k
+        )
+        assert np.array_equal(np.asarray(inf), np.asarray(unbounded)), "infinite radius differs from query_neighbors"

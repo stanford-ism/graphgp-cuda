@@ -562,6 +562,51 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
 
 // ---------------------------------------------------------------------------------
 
+Error query_neighbors_radius_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> split_dims, // (N,) split dimensions
+    Buffer<S32> query_indices, // (Q,)
+    Buffer<S32> max_indices, // (Q,)
+    Buffer<F32> max_square_distances, // (Q,)
+    ResultBuffer<S32> neighbors // (Q, k)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_queries = query_indices.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t k = neighbors->dimensions()[1];
+
+    decltype(&query_neighbors_radius_kernel<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_neighbors_radius_kernel);
+    dispatch<<<cld(n_queries, 256), 256, 0, stream>>>(
+        points.typed_data(), 
+        split_dims.typed_data(),
+        query_indices.typed_data(),
+        max_indices.typed_data(),
+        max_square_distances.typed_data(),
+        neighbors->typed_data(),
+        k,
+        n_points,
+        n_queries
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    query_neighbors_radius_ffi_32, query_neighbors_radius_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // split_dims
+        .Arg<Buffer<S32>>() // query_indices
+        .Arg<Buffer<S32>>() // max_indices
+        .Arg<Buffer<F32>>() // max_square_distances
+        .Ret<Buffer<S32>>() // neighbors
+);
+
+// ---------------------------------------------------------------------------------
+
 Error query_preceding_neighbors_ffi_impl(
     cudaStream_t stream,
     Buffer<F32> points, // (N, d)
@@ -1309,6 +1354,51 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S64>>() // split_dims
         .Arg<Buffer<S64>>() // query_indices
         .Arg<Buffer<S64>>() // max_indices
+        .Ret<Buffer<S64>>() // neighbors
+);
+
+// ---------------------------------------------------------------------------------
+
+Error query_neighbors_radius_ffi_impl_64(
+    cudaStream_t stream,
+    Buffer<F64> points, // (N, d)
+    Buffer<S64> split_dims, // (N,) split dimensions
+    Buffer<S64> query_indices, // (Q,)
+    Buffer<S64> max_indices, // (Q,)
+    Buffer<F64> max_square_distances, // (Q,)
+    ResultBuffer<S64> neighbors // (Q, k)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_queries = query_indices.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t k = neighbors->dimensions()[1];
+
+    decltype(&query_neighbors_radius_kernel<1,1,int64_t,double>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_neighbors_radius_kernel);
+    dispatch<<<cld(n_queries, 256), 256, 0, stream>>>(
+        points.typed_data(), 
+        split_dims.typed_data(),
+        query_indices.typed_data(),
+        max_indices.typed_data(),
+        max_square_distances.typed_data(),
+        neighbors->typed_data(),
+        k,
+        n_points,
+        n_queries
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    query_neighbors_radius_ffi_64, query_neighbors_radius_ffi_impl_64,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F64>>() // points
+        .Arg<Buffer<S64>>() // split_dims
+        .Arg<Buffer<S64>>() // query_indices
+        .Arg<Buffer<S64>>() // max_indices
+        .Arg<Buffer<F64>>() // max_square_distances
         .Ret<Buffer<S64>>() // neighbors
 );
 
