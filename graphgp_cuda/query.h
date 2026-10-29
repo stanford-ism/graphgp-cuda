@@ -179,6 +179,87 @@ __global__ void query_neighbors_kernel(
     }
 }
 
+// Radius-limited variant: the search starts with the given square radius, so points farther away are never
+// visited or returned; unfilled slots are -1.
+template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
+__global__ void query_neighbors_radius_kernel(
+    const f_t* points, // (N, d)
+    const i_t* split_dims, // (N,)
+    const i_t* query_indices, // (Q,)
+    const i_t* max_indices, // (Q,)
+    const f_t* max_square_distances, // (Q,) initial search radius (squared); INFINITY for an unbounded search
+    i_t* neighbors_out, // (Q, k)
+    size_t k,
+    size_t n_points, 
+    size_t n_queries
+) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_queries) return;
+    size_t query_index = query_indices[tid];
+    i_t max_index = max_indices[tid];
+
+    // load query point
+    f_t query[N_DIM];
+    for (size_t i = 0; i < N_DIM; ++i) {
+        query[i] = points[query_index * N_DIM + i];
+    }
+
+    // initialize neighbor arrays
+    i_t neighbors[MAX_K];
+    f_t distances[MAX_K];
+    f_t max_distance = max_square_distances[tid];
+    for (size_t i = 0; i < k; ++i) {
+        distances[i] = max_distance;
+        neighbors[i] = -1; // -1: no point within the radius
+    }
+
+    // set up traversal variables
+    size_t current = 0;
+    size_t root_parent = compute_parent(current);
+    size_t previous = root_parent;
+    size_t next = 0;
+
+    // traverse until we return to root
+    while (current != root_parent) {
+        size_t parent = compute_parent(current);
+
+        // update neighbor array if necessary
+        if (previous == parent) {
+            f_t current_distance = compute_square_distance(points + current * N_DIM, query, N_DIM);
+            if (current_distance < max_distance) {
+                insert_neighbor(neighbors, distances, current, current_distance, k);
+                max_distance = distances[k - 1];
+            }
+        }
+
+        // locate children and determine if far child in range
+        i_t split_dim = split_dims[current];
+        f_t split_distance = query[split_dim] - points[current * N_DIM + split_dim];
+        size_t near_child = (split_distance < 0) ? compute_left(current) : compute_right(current);
+        size_t far_child = (split_distance < 0) ? compute_right(current) : compute_left(current);
+        bool far_in_range = (far_child < max_index) & (split_distance * split_distance <= max_distance);
+
+        // determine next node to traverse
+        if (previous == parent) {
+            if (near_child < max_index) next = near_child;
+            else if (far_in_range) next = far_child;
+            else next = parent;
+        } else if (previous == near_child) {
+            if (far_in_range) next = far_child;
+            else next = parent;
+        } else {
+            next = parent;
+        }
+        previous = current;
+        current = next;
+    }
+
+    // write neighbors to output
+    for (size_t i = 0; i < k; ++i) {
+        neighbors_out[tid * k + i] = neighbors[i];
+    }
+}
+
 // template <int MAX_K, int N_DIM>
 // __host__ void query_neighbors(
 //     cudaStream_t stream,
