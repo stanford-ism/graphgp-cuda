@@ -32,10 +32,10 @@ refine_logdet_p = {
     "32": Primitive("graphgp_cuda_refine_logdet_32"),
     "64": Primitive("graphgp_cuda_refine_logdet_64"),
 }
-refine_level_p = {m: Primitive(f"graphgp_cuda_refine_level_{m}") for m in ("32", "64")}
-refine_level_transpose_p = {m: Primitive(f"graphgp_cuda_refine_level_transpose_{m}") for m in ("32", "64")}
-refine_level_jvp_p = {m: Primitive(f"graphgp_cuda_refine_level_jvp_{m}") for m in ("32", "64")}
-refine_level_vjp_p = {m: Primitive(f"graphgp_cuda_refine_level_vjp_{m}") for m in ("32", "64")}
+refine_step_p = {m: Primitive(f"graphgp_cuda_refine_step_{m}") for m in ("32", "64")}
+refine_step_transpose_p = {m: Primitive(f"graphgp_cuda_refine_step_transpose_{m}") for m in ("32", "64")}
+refine_step_jvp_p = {m: Primitive(f"graphgp_cuda_refine_step_jvp_{m}") for m in ("32", "64")}
+refine_step_vjp_p = {m: Primitive(f"graphgp_cuda_refine_step_vjp_{m}") for m in ("32", "64")}
 
 
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
@@ -62,26 +62,36 @@ def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
         return refine_logdet_p["32"].bind(*casted_args)[0]
 
 
-def refine_level(points_global, points_local, neighbors, levels, level, cov_bins, cov_vals, values_global, xi, values_local):
-    """One level of refinement in an arbitrary point order (distributed generation).
+def refine_step(
+    source_points, source_values, target_points, target_neighbors, target_xi, cov_bins, cov_vals, valid=None
+):
+    """One conditional step of the refinement: draw the target points given their neighbors among the source points.
+
+    Nothing is assumed about the order or the layout of the points; ``refine`` is a sequence of such steps over the
+    levels of a graph. Differentiable with respect to ``source_values``, ``target_xi`` and ``cov_vals``.
 
     Args:
-        points_global: All points of shape ``(N, d)`` (replicated on every device).
-        points_local: The points handled here, ``(M, d)``.
-        neighbors: Their neighbors as indices into ``points_global``, ``(M, k)``.
-        levels: Level of every local point, ``(M,)``; the initial points have level 0.
-        level: The level to refine, an integer array of shape ``(1,)``.
+        source_points: Points the neighbors refer to, ``(N, d)``.
+        source_values: Their values, ``(..., N)``.
+        target_points: The points to generate, ``(M, d)``.
+        target_neighbors: Neighbors of the targets as indices into the source points, ``(M, k)``.
+        target_xi: Excitations of the targets, ``(..., M)``.
         cov_bins, cov_vals: Discretized covariance (``cov_vals`` may have leading batch dims).
-        values_global: Current values of all points, ``(..., N)`` (gathered before the call).
-        xi: Excitations of the local points, ``(..., M)``.
-        values_local: Current values of the local points, ``(..., M)``.
+        valid: Optional mask ``(M,)``; targets where it is zero are padding (their value is 0, they are not
+            factorized and take no part in the derivatives). All targets are valid by default.
 
     Returns:
-        The local values with the points of ``level`` refined, ``(..., M)``.
+        The values of the targets, ``(..., M)``.
     """
-    args = _cast_all(points_global, points_local, neighbors, levels, level, cov_bins, cov_vals, values_global, xi, values_local)
+    if valid is None:
+        valid = jnp.ones(target_points.shape[:1], dtype=jnp.int32)
+    else:
+        valid = (jnp.asarray(valid) != 0).astype(jnp.int32)
+    args = _cast_all(
+        source_points, target_points, target_neighbors, valid, cov_bins, cov_vals, source_values, target_xi
+    )
     mode = "64" if args[0].dtype == jnp.float64 else "32"
-    return refine_level_p[mode].bind(*args)[0]
+    return refine_step_p[mode].bind(*args)[0]
 
 
 def _determine_dtype(*args):
@@ -120,15 +130,16 @@ def initialize():
         "build_tree",
         "query_preceding_neighbors",
         "query_neighbors",
+        "query_neighbors_radius",
         "compute_depths_parallel",
         "order_by_depth",
         "build_graph",
         "sort",
         "sort_three",
-        "refine_level",
-        "refine_level_transpose",
-        "refine_level_jvp",
-        "refine_level_vjp",
+        "refine_step",
+        "refine_step_transpose",
+        "refine_step_jvp",
+        "refine_step_vjp",
     ]:
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi_32",
@@ -294,86 +305,84 @@ def initialize():
             platform="gpu",
         )
 
-    def _register_level_for_mode(mode):
+    def _register_step_for_mode(mode):
         dtype = jnp.float32 if mode == "32" else jnp.float64
-        # argument indices: 0 points_global, 1 points_local, 2 neighbors, 3 levels, 4 level,
-        # 5 cov_bins, 6 cov_vals, 7 values_global, 8 xi, 9 values_local
+        # argument indices: 0 source_points, 1 target_points, 2 target_neighbors, 3 valid,
+        # 4 cov_bins, 5 cov_vals, 6 source_values, 7 target_xi
 
-        def level_abstract(pg, pl, nb, lv, level, cb, cv, vg, xi, vl):
-            return (ShapedArray(vl.shape, dtype),)
+        def step_abstract(sp, tp, nb, va, cb, cv, sv, xi):
+            return (ShapedArray(xi.shape, dtype),)
 
-        def level_value_and_jvp(primals, tangents):
-            primals_out = refine_level_p[mode].bind(*primals)
-            if all(isinstance(t, ad.Zero) for t in tangents[:7]):  # linear case
-                filled = tuple(ad.instantiate_zeros(t) for t in tangents[7:])
-                tangents_out = refine_level_p[mode].bind(*primals[:7], *filled)
-            elif all(isinstance(t, ad.Zero) for t in tangents[:6]):  # covariance tangent
+        def step_value_and_jvp(primals, tangents):
+            primals_out = refine_step_p[mode].bind(*primals)
+            if all(isinstance(t, ad.Zero) for t in tangents[:6]):  # linear case
                 filled = tuple(ad.instantiate_zeros(t) for t in tangents[6:])
-                tangents_out = refine_level_jvp_p[mode].bind(*primals, *filled)
+                tangents_out = refine_step_p[mode].bind(*primals[:6], *filled)
+            elif all(isinstance(t, ad.Zero) for t in tangents[:5]):  # covariance tangent
+                filled = tuple(ad.instantiate_zeros(t) for t in tangents[5:])
+                tangents_out = refine_step_jvp_p[mode].bind(*primals, *filled)
             else:
                 nonzero = tuple(i for i, t in enumerate(tangents) if not isinstance(t, ad.Zero))
                 raise NotImplementedError(f"JVP not supported for non-Zero tangents {nonzero}.")
             return primals_out, tangents_out
 
         register_primitive(
-            refine_level_p[mode],
-            ffi_name=f"graphgp_cuda_refine_level_ffi_{mode}",
-            abstract=level_abstract,
-            batch_args=(6, 7, 8, 9),
-            transposes=[(refine_level_transpose_p[mode], (7, 8, 9))],
-            jvp_rule=level_value_and_jvp,
+            refine_step_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_ffi_{mode}",
+            abstract=step_abstract,
+            batch_args=(5, 6, 7),
+            transposes=[(refine_step_transpose_p[mode], (6, 7))],
+            jvp_rule=step_value_and_jvp,
             platform="gpu",
         )
 
-        def level_transpose_abstract(pg, pl, nb, lv, level, cb, cv, out_t):
+        def step_transpose_abstract(sp, tp, nb, va, cb, cv, out_t):
             batch_shape = out_t.shape[:-1]
             return (
-                ShapedArray(batch_shape + (pg.shape[0],), dtype),  # values_global tangent
-                ShapedArray(out_t.shape, dtype),  # xi tangent
-                ShapedArray(out_t.shape, dtype),  # values_local tangent
+                ShapedArray(batch_shape + (sp.shape[0],), dtype),  # source_values tangent
+                ShapedArray(out_t.shape, dtype),  # target_xi tangent
             )
 
         register_primitive(
-            refine_level_transpose_p[mode],
-            ffi_name=f"graphgp_cuda_refine_level_transpose_ffi_{mode}",
-            abstract=level_transpose_abstract,
-            batch_args=(6, 7),
-            transposes=[(refine_level_p[mode], (7,))],
+            refine_step_transpose_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_transpose_ffi_{mode}",
+            abstract=step_transpose_abstract,
+            batch_args=(5, 6),
+            transposes=[(refine_step_p[mode], (6,))],
             platform="gpu",
         )
 
-        def level_jvp_abstract(pg, pl, nb, lv, level, cb, cv, vg, xi, vl, cv_t, vg_t, xi_t, vl_t):
-            return (ShapedArray(vl.shape, dtype),)
+        def step_jvp_abstract(sp, tp, nb, va, cb, cv, sv, xi, cv_t, sv_t, xi_t):
+            return (ShapedArray(xi.shape, dtype),)
 
         register_primitive(
-            refine_level_jvp_p[mode],
-            ffi_name=f"graphgp_cuda_refine_level_jvp_ffi_{mode}",
-            abstract=level_jvp_abstract,
-            batch_args=(6, 7, 8, 9, 10, 11, 12, 13),
-            transposes=[(refine_level_vjp_p[mode], (10, 11, 12, 13))],
+            refine_step_jvp_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_jvp_ffi_{mode}",
+            abstract=step_jvp_abstract,
+            batch_args=(5, 6, 7, 8, 9, 10),
+            transposes=[(refine_step_vjp_p[mode], (8, 9, 10))],
             platform="gpu",
         )
 
-        def level_vjp_abstract(pg, pl, nb, lv, level, cb, cv, vg, xi, vl, out_t):
+        def step_vjp_abstract(sp, tp, nb, va, cb, cv, sv, xi, out_t):
             return (
                 ShapedArray(cv.shape, dtype),
-                ShapedArray(vg.shape, dtype),
+                ShapedArray(sv.shape, dtype),
                 ShapedArray(xi.shape, dtype),
-                ShapedArray(vl.shape, dtype),
             )
 
         register_primitive(
-            refine_level_vjp_p[mode],
-            ffi_name=f"graphgp_cuda_refine_level_vjp_ffi_{mode}",
-            abstract=level_vjp_abstract,
-            batch_args=(6, 7, 8, 9, 10),
-            transposes=[(refine_level_jvp_p[mode], (10,))],
+            refine_step_vjp_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_vjp_ffi_{mode}",
+            abstract=step_vjp_abstract,
+            batch_args=(5, 6, 7, 8),
+            transposes=[(refine_step_jvp_p[mode], (8,))],
             platform="gpu",
         )
 
     for mode in ["32", "64"]:
         _register_for_mode(mode)
-        _register_level_for_mode(mode)
+        _register_step_for_mode(mode)
 
 
 # ===================== Automatic custom primitive registration =====================
@@ -522,6 +531,19 @@ def query_neighbors(points, split_dims, query_indices, max_indices, *, k):
         jax.ShapeDtypeStruct((query_indices.shape[0], k), int_dtype),
     )
     neighbors = call(*_cast_all(points, split_dims, query_indices, max_indices))
+    return neighbors
+
+
+@Partial(jax.jit, static_argnames=("k"))
+def query_neighbors_radius(points, split_dims, query_indices, max_indices, max_square_distances, *, k):
+    """Like ``query_neighbors`` with a per-query initial square search radius: only points closer than
+    the radius are visited and returned, unfilled slots are -1."""
+    int_dtype, float_dtype, mode = _determine_dtype(points, split_dims, query_indices, max_indices, max_square_distances)
+    call = jax.ffi.ffi_call(
+        "graphgp_cuda_query_neighbors_radius_ffi" + mode,
+        jax.ShapeDtypeStruct((query_indices.shape[0], k), int_dtype),
+    )
+    neighbors = call(*_cast_all(points, split_dims, query_indices, max_indices, max_square_distances))
     return neighbors
 
 

@@ -13,7 +13,7 @@
 #include "refine.h"
 #include "refine_inv.h"
 #include "refine_logdet.h"
-#include "refine_level.h"
+#include "refine_step.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -557,6 +557,51 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<S32>>() // split_dims
         .Arg<Buffer<S32>>() // query_indices
         .Arg<Buffer<S32>>() // max_indices
+        .Ret<Buffer<S32>>() // neighbors
+);
+
+// ---------------------------------------------------------------------------------
+
+Error query_neighbors_radius_ffi_impl(
+    cudaStream_t stream,
+    Buffer<F32> points, // (N, d)
+    Buffer<S32> split_dims, // (N,) split dimensions
+    Buffer<S32> query_indices, // (Q,)
+    Buffer<S32> max_indices, // (Q,)
+    Buffer<F32> max_square_distances, // (Q,)
+    ResultBuffer<S32> neighbors // (Q, k)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_queries = query_indices.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t k = neighbors->dimensions()[1];
+
+    decltype(&query_neighbors_radius_kernel<1,1,int,float>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_neighbors_radius_kernel);
+    dispatch<<<cld(n_queries, 256), 256, 0, stream>>>(
+        points.typed_data(), 
+        split_dims.typed_data(),
+        query_indices.typed_data(),
+        max_indices.typed_data(),
+        max_square_distances.typed_data(),
+        neighbors->typed_data(),
+        k,
+        n_points,
+        n_queries
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    query_neighbors_radius_ffi_32, query_neighbors_radius_ffi_impl,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F32>>() // points
+        .Arg<Buffer<S32>>() // split_dims
+        .Arg<Buffer<S32>>() // query_indices
+        .Arg<Buffer<S32>>() // max_indices
+        .Arg<Buffer<F32>>() // max_square_distances
         .Ret<Buffer<S32>>() // neighbors
 );
 
@@ -1314,6 +1359,51 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
 
 // ---------------------------------------------------------------------------------
 
+Error query_neighbors_radius_ffi_impl_64(
+    cudaStream_t stream,
+    Buffer<F64> points, // (N, d)
+    Buffer<S64> split_dims, // (N,) split dimensions
+    Buffer<S64> query_indices, // (Q,)
+    Buffer<S64> max_indices, // (Q,)
+    Buffer<F64> max_square_distances, // (Q,)
+    ResultBuffer<S64> neighbors // (Q, k)
+) {
+    size_t n_points = points.dimensions()[0];
+    size_t n_queries = query_indices.dimensions()[0];
+    size_t n_dim = points.dimensions()[1];
+    size_t k = neighbors->dimensions()[1];
+
+    decltype(&query_neighbors_radius_kernel<1,1,int64_t,double>) dispatch = nullptr;
+    DISPATCH_K_DIM(dispatch, query_neighbors_radius_kernel);
+    dispatch<<<cld(n_queries, 256), 256, 0, stream>>>(
+        points.typed_data(), 
+        split_dims.typed_data(),
+        query_indices.typed_data(),
+        max_indices.typed_data(),
+        max_square_distances.typed_data(),
+        neighbors->typed_data(),
+        k,
+        n_points,
+        n_queries
+    );
+
+    return Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    query_neighbors_radius_ffi_64, query_neighbors_radius_ffi_impl_64,
+    Ffi::Bind()
+        .Ctx<PlatformStream<cudaStream_t>>()
+        .Arg<Buffer<F64>>() // points
+        .Arg<Buffer<S64>>() // split_dims
+        .Arg<Buffer<S64>>() // query_indices
+        .Arg<Buffer<S64>>() // max_indices
+        .Arg<Buffer<F64>>() // max_square_distances
+        .Ret<Buffer<S64>>() // neighbors
+);
+
+// ---------------------------------------------------------------------------------
+
 Error query_preceding_neighbors_ffi_impl_64(
     cudaStream_t stream,
     Buffer<F64> points, // (N, d)
@@ -1573,122 +1663,104 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>()  // keys4_out
 );
 
-// ==================== LEVEL-WISE REFINE (distributed, user order) ====================
-// One launch per level: see refine_level.h. Batch dims are leading dims of cov_vals.
+// ==================== SINGLE REFINEMENT STEP ====================
+// Targets drawn given their neighbors among the source points: see refine_step.h.
+// Batch dims are leading dims of cov_vals.
 
-#define GGP_N_BATCHES(COV) \
+#define GGP_STEP_SIZES \
+    size_t n_source = source_points.dimensions()[0]; \
+    size_t n_dim = source_points.dimensions()[1]; \
+    size_t n_target = target_points.dimensions()[0]; \
+    size_t k = neighbors.dimensions()[1]; \
+    size_t n_cov = cov_bins.dimensions()[0]; \
     size_t n_batches = 1; \
-    { size_t n_batch_dims = COV.dimensions().size() - 1; \
-      for (size_t i = 0; i < n_batch_dims; ++i) n_batches *= COV.dimensions()[i]; }
+    { size_t n_batch_dims = cov_vals.dimensions().size() - 1; \
+      for (size_t i = 0; i < n_batch_dims; ++i) n_batches *= cov_vals.dimensions()[i]; }
 
-#define DEFINE_REFINE_LEVEL(SUFFIX, FT, IT, f_t, i_t) \
-Error refine_level_ffi_impl##SUFFIX( \
-    cudaStream_t stream, Buffer<FT> points_global, Buffer<FT> points_local, Buffer<IT> neighbors, \
-    Buffer<IT> levels, Buffer<IT> level, Buffer<FT> cov_bins, Buffer<FT> cov_vals, \
-    Buffer<FT> values_global, Buffer<FT> xi, Buffer<FT> values_local, ResultBuffer<FT> out) { \
-    size_t n_global = points_global.dimensions()[0]; \
-    size_t n_dim = points_global.dimensions()[1]; \
-    size_t n_local = points_local.dimensions()[0]; \
-    size_t k = neighbors.dimensions()[1]; \
-    size_t n_cov = cov_bins.dimensions()[0]; \
-    GGP_N_BATCHES(cov_vals) \
-    decltype(&refine_level<1, 1, i_t, f_t>) dispatch = nullptr; \
-    DISPATCH_K_DIM(dispatch, refine_level); \
-    dispatch(stream, points_global.typed_data(), points_local.typed_data(), neighbors.typed_data(), \
-             levels.typed_data(), level.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), \
-             values_global.typed_data(), xi.typed_data(), values_local.typed_data(), out->typed_data(), \
-             k, n_global, n_local, n_cov, n_batches); \
+#define DEFINE_REFINE_STEP(SUFFIX, FT, IT, f_t, i_t) \
+Error refine_step_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> source_values, Buffer<FT> xi, \
+    ResultBuffer<FT> out) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), source_values.typed_data(), \
+             xi.typed_data(), out->typed_data(), k, n_source, n_target, n_cov, n_batches); \
     return Error::Success(); \
 } \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
-    refine_level_ffi##SUFFIX, refine_level_ffi_impl##SUFFIX, \
+    refine_step_ffi##SUFFIX, refine_step_ffi_impl##SUFFIX, \
     Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
-        .Ret<Buffer<FT>>()); \
-\
-Error refine_level_transpose_ffi_impl##SUFFIX( \
-    cudaStream_t stream, Buffer<FT> points_global, Buffer<FT> points_local, Buffer<IT> neighbors, \
-    Buffer<IT> levels, Buffer<IT> level, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> out_tangent, \
-    ResultBuffer<FT> values_global_tangent, ResultBuffer<FT> xi_tangent, ResultBuffer<FT> values_local_tangent) { \
-    size_t n_global = points_global.dimensions()[0]; \
-    size_t n_dim = points_global.dimensions()[1]; \
-    size_t n_local = points_local.dimensions()[0]; \
-    size_t k = neighbors.dimensions()[1]; \
-    size_t n_cov = cov_bins.dimensions()[0]; \
-    GGP_N_BATCHES(cov_vals) \
-    decltype(&refine_level_transpose<1, 1, i_t, f_t>) dispatch = nullptr; \
-    DISPATCH_K_DIM(dispatch, refine_level_transpose); \
-    dispatch(stream, points_global.typed_data(), points_local.typed_data(), neighbors.typed_data(), \
-             levels.typed_data(), level.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), \
-             out_tangent.typed_data(), values_global_tangent->typed_data(), xi_tangent->typed_data(), \
-             values_local_tangent->typed_data(), k, n_global, n_local, n_cov, n_batches); \
-    return Error::Success(); \
-} \
-XLA_FFI_DEFINE_HANDLER_SYMBOL( \
-    refine_level_transpose_ffi##SUFFIX, refine_level_transpose_ffi_impl##SUFFIX, \
-    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
-        .Ret<Buffer<FT>>().Ret<Buffer<FT>>().Ret<Buffer<FT>>()); \
-\
-Error refine_level_jvp_ffi_impl##SUFFIX( \
-    cudaStream_t stream, Buffer<FT> points_global, Buffer<FT> points_local, Buffer<IT> neighbors, \
-    Buffer<IT> levels, Buffer<IT> level, Buffer<FT> cov_bins, Buffer<FT> cov_vals, \
-    Buffer<FT> values_global, Buffer<FT> xi, Buffer<FT> values_local, \
-    Buffer<FT> cov_vals_tangent, Buffer<FT> values_global_tangent, Buffer<FT> xi_tangent, \
-    Buffer<FT> values_local_tangent, ResultBuffer<FT> out_tangent) { \
-    size_t n_global = points_global.dimensions()[0]; \
-    size_t n_dim = points_global.dimensions()[1]; \
-    size_t n_local = points_local.dimensions()[0]; \
-    size_t k = neighbors.dimensions()[1]; \
-    size_t n_cov = cov_bins.dimensions()[0]; \
-    GGP_N_BATCHES(cov_vals) \
-    decltype(&refine_level_jvp<1, 1, i_t, f_t>) dispatch = nullptr; \
-    DISPATCH_K_DIM(dispatch, refine_level_jvp); \
-    dispatch(stream, points_global.typed_data(), points_local.typed_data(), neighbors.typed_data(), \
-             levels.typed_data(), level.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), \
-             values_global.typed_data(), xi.typed_data(), cov_vals_tangent.typed_data(), \
-             values_global_tangent.typed_data(), xi_tangent.typed_data(), values_local_tangent.typed_data(), \
-             out_tangent->typed_data(), k, n_global, n_local, n_cov, n_batches); \
-    return Error::Success(); \
-} \
-XLA_FFI_DEFINE_HANDLER_SYMBOL( \
-    refine_level_jvp_ffi##SUFFIX, refine_level_jvp_ffi_impl##SUFFIX, \
-    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
         .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
         .Ret<Buffer<FT>>()); \
 \
-Error refine_level_vjp_ffi_impl##SUFFIX( \
-    cudaStream_t stream, Buffer<FT> points_global, Buffer<FT> points_local, Buffer<IT> neighbors, \
-    Buffer<IT> levels, Buffer<IT> level, Buffer<FT> cov_bins, Buffer<FT> cov_vals, \
-    Buffer<FT> values_global, Buffer<FT> xi, Buffer<FT> values_local, Buffer<FT> out_tangent, \
-    ResultBuffer<FT> cov_vals_tangent, ResultBuffer<FT> values_global_tangent, \
-    ResultBuffer<FT> xi_tangent, ResultBuffer<FT> values_local_tangent) { \
-    size_t n_global = points_global.dimensions()[0]; \
-    size_t n_dim = points_global.dimensions()[1]; \
-    size_t n_local = points_local.dimensions()[0]; \
-    size_t k = neighbors.dimensions()[1]; \
-    size_t n_cov = cov_bins.dimensions()[0]; \
-    GGP_N_BATCHES(cov_vals) \
-    decltype(&refine_level_vjp<1, 1, i_t, f_t>) dispatch = nullptr; \
-    DISPATCH_K_DIM(dispatch, refine_level_vjp); \
-    dispatch(stream, points_global.typed_data(), points_local.typed_data(), neighbors.typed_data(), \
-             levels.typed_data(), level.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), \
-             values_global.typed_data(), xi.typed_data(), out_tangent.typed_data(), \
-             cov_vals_tangent->typed_data(), values_global_tangent->typed_data(), xi_tangent->typed_data(), \
-             values_local_tangent->typed_data(), k, n_global, n_local, n_cov, n_batches); \
+Error refine_step_transpose_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> out_tangent, \
+    ResultBuffer<FT> source_values_tangent, ResultBuffer<FT> xi_tangent) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step_transpose<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step_transpose); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), out_tangent.typed_data(), \
+             source_values_tangent->typed_data(), xi_tangent->typed_data(), \
+             k, n_source, n_target, n_cov, n_batches); \
     return Error::Success(); \
 } \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
-    refine_level_vjp_ffi##SUFFIX, refine_level_vjp_ffi_impl##SUFFIX, \
+    refine_step_transpose_ffi##SUFFIX, refine_step_transpose_ffi_impl##SUFFIX, \
     Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
-        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Ret<Buffer<FT>>().Ret<Buffer<FT>>()); \
+\
+Error refine_step_jvp_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> source_values, Buffer<FT> xi, \
+    Buffer<FT> cov_vals_tangent, Buffer<FT> source_values_tangent, Buffer<FT> xi_tangent, \
+    ResultBuffer<FT> out_tangent) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step_jvp<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step_jvp); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), source_values.typed_data(), \
+             xi.typed_data(), cov_vals_tangent.typed_data(), source_values_tangent.typed_data(), \
+             xi_tangent.typed_data(), out_tangent->typed_data(), k, n_source, n_target, n_cov, n_batches); \
+    return Error::Success(); \
+} \
+XLA_FFI_DEFINE_HANDLER_SYMBOL( \
+    refine_step_jvp_ffi##SUFFIX, refine_step_jvp_ffi_impl##SUFFIX, \
+    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Ret<Buffer<FT>>()); \
+\
+Error refine_step_vjp_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> source_values, Buffer<FT> xi, \
+    Buffer<FT> out_tangent, ResultBuffer<FT> cov_vals_tangent, ResultBuffer<FT> source_values_tangent, \
+    ResultBuffer<FT> xi_tangent) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step_vjp<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step_vjp); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), source_values.typed_data(), \
+             xi.typed_data(), out_tangent.typed_data(), cov_vals_tangent->typed_data(), \
+             source_values_tangent->typed_data(), xi_tangent->typed_data(), \
+             k, n_source, n_target, n_cov, n_batches); \
+    return Error::Success(); \
+} \
+XLA_FFI_DEFINE_HANDLER_SYMBOL( \
+    refine_step_vjp_ffi##SUFFIX, refine_step_vjp_ffi_impl##SUFFIX, \
+    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
         .Arg<Buffer<FT>>() \
-        .Ret<Buffer<FT>>().Ret<Buffer<FT>>().Ret<Buffer<FT>>().Ret<Buffer<FT>>());
+        .Ret<Buffer<FT>>().Ret<Buffer<FT>>().Ret<Buffer<FT>>());
 
-DEFINE_REFINE_LEVEL(_32, F32, S32, float, int32_t)
-DEFINE_REFINE_LEVEL(_64, F64, S64, double, int64_t)
+DEFINE_REFINE_STEP(_32, F32, S32, float, int32_t)
+DEFINE_REFINE_STEP(_64, F64, S64, double, int64_t)
