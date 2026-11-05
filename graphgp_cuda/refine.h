@@ -351,7 +351,7 @@ __host__ void refine_jvp(
     }
 }
 
-template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>  
+template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
 __global__ void refine_vjp_kernel(
     const f_t* points, // (N, d)
     const i_t* neighbors, // (N - n0, k)
@@ -363,74 +363,90 @@ __global__ void refine_vjp_kernel(
     f_t* values_tangent, // (B, N)
     f_t* xi_tangent, // (B, N - n0)
     size_t n0,
-    size_t k, 
+    size_t k,
     size_t n_points,
     size_t n_cov,
-    size_t n_batches, // number of batches, affects cov_vals, values_tangent, and xi_tangent
     size_t start_idx, // = offsets[level]
-    size_t n_threads // = (end_idx - start_idx) * n_batches
+    size_t n_level, // = end_idx - start_idx; grid is (blocks over the level, n_batches)
+    bool use_smem // accumulate the covariance cotangent per block in shared memory
 ) {
-    // compute global index of the point to refine
-    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n_threads) return;
-    size_t n_points_per_batch = n_threads / n_batches;
-    size_t b = tid / n_points_per_batch; // batch index
-    size_t idx = start_idx + (tid % n_points_per_batch); // point index within batch
-
-    // batched memory access
-    const f_t* b_cov_vals = cov_vals + b * n_cov;
-    const f_t* b_xi = xi + b * (n_points - n0);
-    const f_t* b_values = values + b * n_points;
+    // block-private histogram of the covariance cotangent: shared-memory atomics
+    // within the block, one global atomic per bin per block at the end
+    extern __shared__ unsigned char smem_raw[];
+    f_t* s_cov = reinterpret_cast<f_t*>(smem_raw);
+    size_t b = blockIdx.y; // batch index
     f_t* b_cov_vals_tangent = cov_vals_tangent + b * n_cov;
-    f_t* b_values_tangent = values_tangent + b * n_points;
-    f_t* b_xi_tangent = xi_tangent + b * (n_points - n0);
+    if (use_smem) {
+        for (size_t i = threadIdx.x; i < n_cov; i += blockDim.x) s_cov[i] = f_t(0);
+        __syncthreads();
+    }
+    f_t* cov_target = use_smem ? s_cov : b_cov_vals_tangent;
 
-    // define working variables, these should fit on register
-    f_t pts[(MAX_K + 1) * N_DIM]; // fine point + K coarse points
-    f_t vec[MAX_K + 1];
-    f_t vec_tangent[MAX_K + 1];
-    f_t mat[((MAX_K + 1) * (MAX_K + 2)) / 2]; // lower triangular matrix for joint covariance
-    f_t mat_tangent[((MAX_K + 1) * (MAX_K + 2)) / 2];
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < n_level) {
+        size_t idx = start_idx + tid; // point index within batch
 
-    // load neighbor points
-    for (size_t i = 0; i < k; ++i) {
-        size_t neighbor_idx = neighbors[(idx - n0) * k + i];
-        vec[i] = b_values[neighbor_idx];
+        // batched memory access
+        const f_t* b_cov_vals = cov_vals + b * n_cov;
+        const f_t* b_xi = xi + b * (n_points - n0);
+        const f_t* b_values = values + b * n_points;
+        f_t* b_values_tangent = values_tangent + b * n_points;
+        f_t* b_xi_tangent = xi_tangent + b * (n_points - n0);
+
+        // define working variables, these should fit on register
+        f_t pts[(MAX_K + 1) * N_DIM]; // fine point + K coarse points
+        f_t vec[MAX_K + 1];
+        f_t vec_tangent[MAX_K + 1];
+        f_t mat[((MAX_K + 1) * (MAX_K + 2)) / 2]; // lower triangular matrix for joint covariance
+        f_t mat_tangent[((MAX_K + 1) * (MAX_K + 2)) / 2];
+
+        // load neighbor points
+        for (size_t i = 0; i < k; ++i) {
+            size_t neighbor_idx = neighbors[(idx - n0) * k + i];
+            vec[i] = b_values[neighbor_idx];
+            for (size_t j = 0; j < N_DIM; ++j) {
+                pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
+            }
+        }
+
+        // load current point
         for (size_t j = 0; j < N_DIM; ++j) {
-            pts[i * N_DIM + j] = points[neighbor_idx * N_DIM + j];
+            pts[k * N_DIM + j] = points[idx * N_DIM + j];
+        }
+        vec[k] = b_xi[idx - n0];
+        f_t fine_value_tangent = b_values_tangent[idx];
+
+        // factorize matrix and prepare intermediate vectors
+        cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
+        cholesky(mat, k + 1); // L
+        solve_cholesky_forward(mat, vec, k, 1); // "xi_c"
+        matmul(mat + tri(k, 0), &fine_value_tangent, vec_tangent, k + 1, 1, 1); // not actually the tangent of vec
+        solve_cholesky_backward(mat, vec_tangent, k, 1); // Lcc^-T
+
+        // linear transpose
+        atomicAdd(b_xi_tangent + (idx - n0), vec_tangent[k]);
+        for (size_t i = 0; i < k; ++i) {
+            atomicAdd(b_values_tangent + neighbors[(idx - n0) * k + i], vec_tangent[i]);
+        }
+
+        // covariance vjp
+        mat_tangent[tri(k, k)] = fine_value_tangent * vec[k]; // Lbar_ff
+        for (size_t i = 0; i < k; ++i) {
+            mat_tangent[tri(k, i)] = fine_value_tangent * vec[i]; // Lbar_fc
+            for (size_t j = 0; j <= i; ++j) {
+                mat_tangent[tri(i, j)] = -vec_tangent[i] * vec[j]; // Lbar_cc
+            }
+        }
+        cholesky_vjp(mat, mat_tangent, k + 1);
+        cov_lookup_matrix_vjp(pts, mat_tangent, cov_bins, cov_target, k + 1, N_DIM, n_cov);
+    }
+
+    if (use_smem) {
+        __syncthreads();
+        for (size_t i = threadIdx.x; i < n_cov; i += blockDim.x) {
+            if (s_cov[i] != f_t(0)) atomicAdd(b_cov_vals_tangent + i, s_cov[i]);
         }
     }
-
-    // load current point
-    for (size_t j = 0; j < N_DIM; ++j) {
-        pts[k * N_DIM + j] = points[idx * N_DIM + j];
-    }
-    vec[k] = b_xi[idx - n0];
-    f_t fine_value_tangent = b_values_tangent[idx];
-
-    // factorize matrix and prepare intermediate vectors
-    cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
-    cholesky(mat, k + 1); // L
-    solve_cholesky_forward(mat, vec, k, 1); // "xi_c"
-    matmul(mat + tri(k, 0), &fine_value_tangent, vec_tangent, k + 1, 1, 1); // not actually the tangent of vec
-    solve_cholesky_backward(mat, vec_tangent, k, 1); // Lcc^-T
-
-    // linear transpose
-    atomicAdd(b_xi_tangent + (idx - n0), vec_tangent[k]);
-    for (size_t i = 0; i < k; ++i) {
-        atomicAdd(b_values_tangent + neighbors[(idx - n0) * k + i], vec_tangent[i]);
-    }
-
-    // covariance vjp
-    mat_tangent[tri(k, k)] = fine_value_tangent * vec[k]; // Lbar_ff
-    for (size_t i = 0; i < k; ++i) {
-        mat_tangent[tri(k, i)] = fine_value_tangent * vec[i]; // Lbar_fc
-        for (size_t j = 0; j <= i; ++j) {
-            mat_tangent[tri(i, j)] = -vec_tangent[i] * vec[j]; // Lbar_cc
-        }
-    }
-    cholesky_vjp(mat, mat_tangent, k + 1);
-    cov_lookup_matrix_vjp(pts, mat_tangent, cov_bins, b_cov_vals_tangent, k + 1, N_DIM, n_cov);
 }
 
 template <size_t MAX_K, size_t N_DIM, typename i_t, typename f_t>
@@ -461,13 +477,17 @@ __host__ void refine_vjp(
     cudaMemsetAsync(cov_vals_tangent, 0, n_batches * n_cov * sizeof(f_t), stream);
 
     // walk backwards through levels and compute tangents
+    size_t smem = n_cov * sizeof(f_t);
+    bool use_smem = smem <= 48 * 1024;
     i_t start_idx;
     i_t end_idx;
     for (size_t level = n_levels; level-- > 1;) {
         cudaMemcpyAsync(&start_idx, offsets + level - 1, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
         cudaMemcpyAsync(&end_idx, offsets + level, sizeof(i_t), cudaMemcpyDeviceToHost, stream);
-        size_t n_threads = (end_idx - start_idx) * n_batches;
-        refine_vjp_kernel<MAX_K, N_DIM, i_t, f_t><<<cld(n_threads, 256), 256, 0, stream>>>(
+        size_t n_level = end_idx - start_idx;
+        if (n_level == 0) continue;
+        dim3 grid(cld(n_level, 256), n_batches);
+        refine_vjp_kernel<MAX_K, N_DIM, i_t, f_t><<<grid, 256, use_smem ? smem : 0, stream>>>(
             points,
             neighbors,
             cov_bins,
@@ -481,9 +501,9 @@ __host__ void refine_vjp(
             k,
             n_points,
             n_cov,
-            n_batches,
             start_idx,
-            n_threads);
+            n_level,
+            use_smem);
     }
 
     // copy initial values_tangent to output
