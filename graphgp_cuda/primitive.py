@@ -32,6 +32,10 @@ refine_logdet_p = {
     "32": Primitive("graphgp_cuda_refine_logdet_32"),
     "64": Primitive("graphgp_cuda_refine_logdet_64"),
 }
+refine_step_p = {m: Primitive(f"graphgp_cuda_refine_step_{m}") for m in ("32", "64")}
+refine_step_transpose_p = {m: Primitive(f"graphgp_cuda_refine_step_transpose_{m}") for m in ("32", "64")}
+refine_step_jvp_p = {m: Primitive(f"graphgp_cuda_refine_step_jvp_{m}") for m in ("32", "64")}
+refine_step_vjp_p = {m: Primitive(f"graphgp_cuda_refine_step_vjp_{m}") for m in ("32", "64")}
 
 
 def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi):
@@ -56,6 +60,38 @@ def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals):
         return refine_logdet_p["64"].bind(*casted_args)[0]
     else:
         return refine_logdet_p["32"].bind(*casted_args)[0]
+
+
+def refine_step(
+    source_points, source_values, target_points, target_neighbors, target_xi, cov_bins, cov_vals, valid=None
+):
+    """One conditional step of the refinement: draw the target points given their neighbors among the source points.
+
+    Nothing is assumed about the order or the layout of the points; ``refine`` is a sequence of such steps over the
+    levels of a graph. Differentiable with respect to ``source_values``, ``target_xi`` and ``cov_vals``.
+
+    Args:
+        source_points: Points the neighbors refer to, ``(N, d)``.
+        source_values: Their values, ``(..., N)``.
+        target_points: The points to generate, ``(M, d)``.
+        target_neighbors: Neighbors of the targets as indices into the source points, ``(M, k)``.
+        target_xi: Excitations of the targets, ``(..., M)``.
+        cov_bins, cov_vals: Discretized covariance (``cov_vals`` may have leading batch dims).
+        valid: Optional mask ``(M,)``; targets where it is zero are padding (their value is 0, they are not
+            factorized and take no part in the derivatives). All targets are valid by default.
+
+    Returns:
+        The values of the targets, ``(..., M)``.
+    """
+    if valid is None:
+        valid = jnp.ones(target_points.shape[:1], dtype=jnp.int32)
+    else:
+        valid = (jnp.asarray(valid) != 0).astype(jnp.int32)
+    args = _cast_all(
+        source_points, target_points, target_neighbors, valid, cov_bins, cov_vals, source_values, target_xi
+    )
+    mode = "64" if args[0].dtype == jnp.float64 else "32"
+    return refine_step_p[mode].bind(*args)[0]
 
 
 def _determine_dtype(*args):
@@ -100,6 +136,10 @@ def initialize():
         "build_graph",
         "sort",
         "sort_three",
+        "refine_step",
+        "refine_step_transpose",
+        "refine_step_jvp",
+        "refine_step_vjp",
     ]:
         jax.ffi.register_ffi_target(
             f"graphgp_cuda_{name}_ffi_32",
@@ -265,8 +305,84 @@ def initialize():
             platform="gpu",
         )
 
+    def _register_step_for_mode(mode):
+        dtype = jnp.float32 if mode == "32" else jnp.float64
+        # argument indices: 0 source_points, 1 target_points, 2 target_neighbors, 3 valid,
+        # 4 cov_bins, 5 cov_vals, 6 source_values, 7 target_xi
+
+        def step_abstract(sp, tp, nb, va, cb, cv, sv, xi):
+            return (ShapedArray(xi.shape, dtype),)
+
+        def step_value_and_jvp(primals, tangents):
+            primals_out = refine_step_p[mode].bind(*primals)
+            if all(isinstance(t, ad.Zero) for t in tangents[:6]):  # linear case
+                filled = tuple(ad.instantiate_zeros(t) for t in tangents[6:])
+                tangents_out = refine_step_p[mode].bind(*primals[:6], *filled)
+            elif all(isinstance(t, ad.Zero) for t in tangents[:5]):  # covariance tangent
+                filled = tuple(ad.instantiate_zeros(t) for t in tangents[5:])
+                tangents_out = refine_step_jvp_p[mode].bind(*primals, *filled)
+            else:
+                nonzero = tuple(i for i, t in enumerate(tangents) if not isinstance(t, ad.Zero))
+                raise NotImplementedError(f"JVP not supported for non-Zero tangents {nonzero}.")
+            return primals_out, tangents_out
+
+        register_primitive(
+            refine_step_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_ffi_{mode}",
+            abstract=step_abstract,
+            batch_args=(5, 6, 7),
+            transposes=[(refine_step_transpose_p[mode], (6, 7))],
+            jvp_rule=step_value_and_jvp,
+            platform="gpu",
+        )
+
+        def step_transpose_abstract(sp, tp, nb, va, cb, cv, out_t):
+            batch_shape = out_t.shape[:-1]
+            return (
+                ShapedArray(batch_shape + (sp.shape[0],), dtype),  # source_values tangent
+                ShapedArray(out_t.shape, dtype),  # target_xi tangent
+            )
+
+        register_primitive(
+            refine_step_transpose_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_transpose_ffi_{mode}",
+            abstract=step_transpose_abstract,
+            batch_args=(5, 6),
+            transposes=[(refine_step_p[mode], (6,))],
+            platform="gpu",
+        )
+
+        def step_jvp_abstract(sp, tp, nb, va, cb, cv, sv, xi, cv_t, sv_t, xi_t):
+            return (ShapedArray(xi.shape, dtype),)
+
+        register_primitive(
+            refine_step_jvp_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_jvp_ffi_{mode}",
+            abstract=step_jvp_abstract,
+            batch_args=(5, 6, 7, 8, 9, 10),
+            transposes=[(refine_step_vjp_p[mode], (8, 9, 10))],
+            platform="gpu",
+        )
+
+        def step_vjp_abstract(sp, tp, nb, va, cb, cv, sv, xi, out_t):
+            return (
+                ShapedArray(cv.shape, dtype),
+                ShapedArray(sv.shape, dtype),
+                ShapedArray(xi.shape, dtype),
+            )
+
+        register_primitive(
+            refine_step_vjp_p[mode],
+            ffi_name=f"graphgp_cuda_refine_step_vjp_ffi_{mode}",
+            abstract=step_vjp_abstract,
+            batch_args=(5, 6, 7, 8),
+            transposes=[(refine_step_jvp_p[mode], (8,))],
+            platform="gpu",
+        )
+
     for mode in ["32", "64"]:
         _register_for_mode(mode)
+        _register_step_for_mode(mode)
 
 
 # ===================== Automatic custom primitive registration =====================
