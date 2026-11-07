@@ -131,7 +131,8 @@ Error refine_ffi_impl(
     Buffer<F32> initial_values, // (B1, B2, ..., n0)
     Buffer<F32> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values, // (B1, B2, ..., N)
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -168,7 +169,8 @@ Error refine_ffi_impl(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -187,6 +189,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -202,7 +205,8 @@ Error refine_transpose_ffi_impl(
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values_buffer, // (B1, B2, ..., N) to use as a temporary buffer
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -240,7 +244,8 @@ Error refine_transpose_ffi_impl(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -260,6 +265,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // xi
         .Ret<Buffer<F32>>() // values_buffer
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -278,7 +284,8 @@ Error refine_jvp_ffi_impl(
     Buffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values_tangent,
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -318,7 +325,8 @@ Error refine_jvp_ffi_impl(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -341,6 +349,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -360,7 +369,8 @@ Error refine_vjp_ffi_impl(
     ResultBuffer<F32> initial_values_tangent, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F32> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -401,7 +411,8 @@ Error refine_vjp_ffi_impl(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -425,6 +436,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // xi_tangent
         .Ret<Buffer<F32>>() // values_tangent_buffer
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -439,7 +451,8 @@ Error refine_inv_ffi_impl(
     Buffer<F32> values, // (B1, B2, ..., N)
     ResultBuffer<F32> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F32> xi, // (B1, B2, ..., N - n0)
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -476,7 +489,8 @@ Error refine_inv_ffi_impl(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -495,6 +509,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F32>>() // initial_values
         .Ret<Buffer<F32>>() // xi
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -507,7 +522,8 @@ Error refine_logdet_ffi_impl(
     Buffer<F32> cov_bins, // (R,)
     Buffer<F32> cov_vals, // (B1, B2, ..., R)
     ResultBuffer<F32> logdet, // (B1, B2, ...)
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -542,7 +558,8 @@ Error refine_logdet_ffi_impl(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -559,6 +576,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F32>>() // cov_vals
         .Ret<Buffer<F32>>() // logdet
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ==================== GRAPH CONSTRUCTION ====================
@@ -919,7 +937,8 @@ Error refine_ffi_impl_64(
     Buffer<F64> initial_values, // (B1, B2, ..., n0)
     Buffer<F64> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values, // (B1, B2, ..., N)
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -956,7 +975,8 @@ Error refine_ffi_impl_64(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -975,6 +995,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // xi
         .Ret<Buffer<F64>>() // values
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -990,7 +1011,8 @@ Error refine_transpose_ffi_impl_64(
     ResultBuffer<F64> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values_buffer, // (B1, B2, ..., N) to use as a temporary buffer
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1028,7 +1050,8 @@ Error refine_transpose_ffi_impl_64(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -1048,6 +1071,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>() // xi
         .Ret<Buffer<F64>>() // values_buffer
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1066,7 +1090,8 @@ Error refine_jvp_ffi_impl_64(
     Buffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     Buffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values_tangent,
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1106,7 +1131,8 @@ Error refine_jvp_ffi_impl_64(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -1129,6 +1155,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // xi_tangent
         .Ret<Buffer<F64>>() // values_tangent
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1148,7 +1175,8 @@ Error refine_vjp_ffi_impl_64(
     ResultBuffer<F64> initial_values_tangent, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi_tangent, // (B1, B2, ..., N - n0)
     ResultBuffer<F64> values_tangent_buffer, // (B1, B2, ..., N) to use as a temporary buffer
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1189,7 +1217,8 @@ Error refine_vjp_ffi_impl_64(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -1213,6 +1242,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>() // xi_tangent
         .Ret<Buffer<F64>>() // values_tangent_buffer
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1227,7 +1257,8 @@ Error refine_inv_ffi_impl_64(
     Buffer<F64> values, // (B1, B2, ..., N)
     ResultBuffer<F64> initial_values, // (B1, B2, ..., n0)
     ResultBuffer<F64> xi, // (B1, B2, ..., N - n0)
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1264,7 +1295,8 @@ Error refine_inv_ffi_impl_64(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -1283,6 +1315,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>() // initial_values
         .Ret<Buffer<F64>>() // xi
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ---------------------------------------------------------------------------------
@@ -1295,7 +1328,8 @@ Error refine_logdet_ffi_impl_64(
     Buffer<F64> cov_bins, // (R,)
     Buffer<F64> cov_vals, // (B1, B2, ..., R)
     ResultBuffer<F64> logdet, // (B1, B2, ...)
-    bool clamp
+    bool clamp,
+    double cov_rtol
 ) {
     size_t n_points = points.dimensions()[0];
     size_t n_dim = points.dimensions()[1];
@@ -1330,7 +1364,8 @@ Error refine_logdet_ffi_impl_64(
         n_points,
         n_levels,
         n_cov,
-        n_batches
+        n_batches,
+        cov_rtol
     );
 
     return Error::Success();
@@ -1347,6 +1382,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<Buffer<F64>>() // cov_vals
         .Ret<Buffer<F64>>() // logdet
         .Attr<bool>("clamp")
+        .Attr<double>("cov_rtol")
 );
 
 // ==================== GRAPH CONSTRUCTION ====================

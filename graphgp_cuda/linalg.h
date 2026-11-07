@@ -4,10 +4,11 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-// With CLAMP, pivots of the Cholesky decomposition below n * eps * A_ii are below floating point resolution and are
-// dropped: L_ii and the column below it are set to zero, so that point carries no information to later rows. Every
-// division by a zero pivot is replaced by zero, in the solves and in the derivatives (which hold the set of dropped
-// pivots fixed). Without CLAMP, these functions are the plain unpivoted versions, which give NaN for singular matrices.
+// With CLAMP, pivots of the Cholesky decomposition below n * (eps + cov_rtol) * A_ii are below the accuracy of the
+// factorization (eps) or of the covariance values (cov_rtol) and are dropped: L_ii and the column below it are set to
+// zero, so that point carries no information to later rows. Every division by a zero pivot is replaced by zero, in the
+// solves and in the derivatives (which hold the set of dropped pivots fixed). Without CLAMP, these functions are the
+// plain unpivoted versions, which give NaN for singular matrices.
 
 template <typename f_t>
 __forceinline__ __device__ f_t machine_eps();
@@ -84,11 +85,12 @@ __forceinline__ __device__ void matmul_tri(
 }
 
 // compute the Cholesky decomposition L L.T = A, assuming triangular matrix order and modifying A in place
-// pivots below n * eps * A_ii are dropped (L_ii = 0 and zero column below)
+// pivots below n * (eps + cov_rtol) * A_ii are dropped (L_ii = 0 and zero column below)
 template <bool CLAMP, typename f_t>
 __forceinline__ __device__ void cholesky(
     f_t* A, // (n, n) lower triangular so actually n * (n + 1) / 2 entries
-    int n
+    int n,
+    double cov_rtol // relative accuracy of the entries of A, used with CLAMP
 ) {
     for (int i = 0; i < n; ++i) {
         // off-diagonal elements
@@ -105,7 +107,7 @@ __forceinline__ __device__ void cholesky(
             sum += A[tri(i, j)] * A[tri(i, j)];
         }
         f_t d = A[tri(i, i)] - sum;
-        A[tri(i, i)] = (!CLAMP || d > f_t(n) * machine_eps<f_t>() * A[tri(i, i)]) ? sqrt(d) : f_t(0);
+        A[tri(i, i)] = (!CLAMP || d > f_t(n * (double(machine_eps<f_t>()) + cov_rtol)) * A[tri(i, i)]) ? sqrt(d) : f_t(0);
     }
 }
 
