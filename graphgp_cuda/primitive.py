@@ -34,33 +34,34 @@ refine_logdet_p = {
 }
 
 
-# ``clamp`` selects the kernels that drop Cholesky pivots below floating point resolution and order neighbors by
-# pivoting, instead of the plain unpivoted Cholesky (which gives NaN for singular matrices). It is passed to the FFI
-# handlers as a static attribute, so every rule below forwards the primitive parameters.
+# ``clamp`` selects the kernels that drop Cholesky pivots below the covariance accuracy and order neighbors by
+# pivoting, instead of the plain unpivoted Cholesky (which gives NaN for singular matrices). ``cov_rtol`` is the
+# relative accuracy of the covariance values, which sets the drop tolerance. Both are passed to the FFI handlers as
+# static attributes, so every rule below forwards the primitive parameters.
 
 
-def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, *, clamp=True):
+def refine(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi, *, clamp=True, cov_rtol):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, initial_values, xi)
     if casted_args[0].dtype == jnp.float64:
-        return refine_p["64"].bind(*casted_args, clamp=bool(clamp))[0]
+        return refine_p["64"].bind(*casted_args, clamp=bool(clamp), cov_rtol=float(cov_rtol))[0]
     else:
-        return refine_p["32"].bind(*casted_args, clamp=bool(clamp))[0]
+        return refine_p["32"].bind(*casted_args, clamp=bool(clamp), cov_rtol=float(cov_rtol))[0]
 
 
-def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values, *, clamp=True):
+def refine_inv(points, neighbors, offsets, cov_bins, cov_vals, values, *, clamp=True, cov_rtol):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals, values)
     if casted_args[0].dtype == jnp.float64:
-        return refine_inv_p["64"].bind(*casted_args, clamp=bool(clamp))
+        return refine_inv_p["64"].bind(*casted_args, clamp=bool(clamp), cov_rtol=float(cov_rtol))
     else:
-        return refine_inv_p["32"].bind(*casted_args, clamp=bool(clamp))
+        return refine_inv_p["32"].bind(*casted_args, clamp=bool(clamp), cov_rtol=float(cov_rtol))
 
 
-def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals, *, clamp=True):
+def refine_logdet(points, neighbors, offsets, cov_bins, cov_vals, *, clamp=True, cov_rtol):
     casted_args = _cast_all(points, neighbors, offsets, cov_bins, cov_vals)
     if casted_args[0].dtype == jnp.float64:
-        return refine_logdet_p["64"].bind(*casted_args, clamp=bool(clamp))[0]
+        return refine_logdet_p["64"].bind(*casted_args, clamp=bool(clamp), cov_rtol=float(cov_rtol))[0]
     else:
-        return refine_logdet_p["32"].bind(*casted_args, clamp=bool(clamp))[0]
+        return refine_logdet_p["32"].bind(*casted_args, clamp=bool(clamp), cov_rtol=float(cov_rtol))[0]
 
 
 def _determine_dtype(*args):

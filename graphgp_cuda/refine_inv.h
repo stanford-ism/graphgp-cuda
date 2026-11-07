@@ -22,7 +22,8 @@ __global__ void refine_inv_kernel(
     size_t n_cov,
     size_t n_batches, // number of batches, affects cov_vals, xi, and values
     size_t start_idx, // = offsets[level]
-    size_t n_threads // = (end_idx - start_idx) * n_batches
+    size_t n_threads, // = (end_idx - start_idx) * n_batches
+    double cov_rtol // relative accuracy of the covariance values
 ) {
     // compute global index of the point to refine
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -67,7 +68,7 @@ __global__ void refine_inv_kernel(
 
     // inverse refinement operation
     cov_lookup_matrix(pts, cov_bins, b_cov_vals, mat, k + 1, N_DIM, n_cov); // joint covariance
-    cholesky<CLAMP>(mat, k + 1); // factorize
+    cholesky<CLAMP>(mat, k + 1, cov_rtol); // factorize
     solve_cholesky_forward<CLAMP>(mat, vec, k, 1); // "xi_c" = L_cc^-1 @ v_c
     f_t std = mat[tri(k, k)];
     b_xi[idx - n0] = (!CLAMP || std > f_t(0)) ? (vec[k] - dot(mat + tri(k, 0), vec, k)) / std : f_t(0); // x = (v - mean) / std, or 0 if dropped
@@ -89,7 +90,8 @@ __host__ void refine_inv(
     size_t n_points,
     size_t n_levels,
     size_t n_cov,
-    size_t n_batches // batch dim only affects cov_vals, initial_values, xi, and output values
+    size_t n_batches, // batch dim only affects cov_vals, initial_values, xi, and output values
+    double cov_rtol
 ) {
     // copy offsets to host
     i_t *offsets_host;
@@ -118,7 +120,8 @@ __host__ void refine_inv(
             n_cov,
             n_batches,
             start_idx,
-            n_threads);
+            n_threads,
+            cov_rtol);
     }
 
     free(offsets_host);
