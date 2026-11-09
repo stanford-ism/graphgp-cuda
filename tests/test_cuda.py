@@ -335,6 +335,30 @@ def test_unclamped(setup_graph):
     assert jnp.isclose(logdet1, logdet2, rtol=rtol, atol=atol), "Unclamped log-determinants do not match."
 
 
+def test_cov_rtol(setup_graph):
+    # a coarse covariance accuracy drops refinement pivots, in the CUDA kernels as in the JAX path
+    graph, covariance, points = setup_graph
+    dtype = points.dtype
+    rtol, atol = _rtol(dtype), _atol(dtype)
+    n0 = graph.offsets[0]
+    xi = jr.normal(rng, (points.shape[0],)).astype(dtype)
+    cov_tangent = jr.normal(rng, covariance[1].shape).astype(dtype)
+    initial_values = gp.generate_dense(graph.points[:n0], covariance, xi[:n0])
+
+    def forward(cov_vals, *, cuda, cov_rtol):
+        cov = (covariance[0], cov_vals)
+        args = (graph.points, graph.neighbors, graph.offsets, cov, initial_values, xi[n0:])
+        return gp.refine(*args, cuda=cuda, cov_rtol=cov_rtol)
+
+    jax_out, jax_jvp = jax.jvp(Partial(forward, cuda=False, cov_rtol=1e-2), (covariance[1],), (cov_tangent,))
+    cuda_out, cuda_jvp = jax.jvp(Partial(forward, cuda=True, cov_rtol=1e-2), (covariance[1],), (cov_tangent,))
+    assert jnp.allclose(jax_out, cuda_out, rtol=rtol, atol=atol), "JAX and CUDA forward do not match."
+    assert jnp.allclose(jax_jvp, cuda_jvp, rtol=rtol, atol=atol), "JAX and CUDA JVP do not match."
+    assert not jnp.allclose(cuda_out, forward(covariance[1], cuda=True, cov_rtol=1e-6)), "cov_rtol has no effect."
+    logdet = gp.refine_logdet(graph.points, graph.neighbors, graph.offsets, covariance, cuda=True, cov_rtol=1e-2)
+    assert logdet == -jnp.inf, "No refined point is dropped."
+
+
 @pytest.mark.parametrize("clamp", [True, False])
 def test_clamp_flag_survives_transforms(clamp):
     # with exact duplicates and no jitter, unclamped kernels give NaN and clamped ones do not, through every rule
