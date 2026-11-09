@@ -13,6 +13,7 @@
 #include "refine.h"
 #include "refine_inv.h"
 #include "refine_logdet.h"
+#include "refine_step.h"
 
 using xla::ffi::Buffer;
 using xla::ffi::ResultBuffer;
@@ -1661,3 +1662,105 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<Buffer<F64>>()  // keys3_out
         .Ret<Buffer<F64>>()  // keys4_out
 );
+
+// ==================== SINGLE REFINEMENT STEP ====================
+// Targets drawn given their neighbors among the source points: see refine_step.h.
+// Batch dims are leading dims of cov_vals.
+
+#define GGP_STEP_SIZES \
+    size_t n_source = source_points.dimensions()[0]; \
+    size_t n_dim = source_points.dimensions()[1]; \
+    size_t n_target = target_points.dimensions()[0]; \
+    size_t k = neighbors.dimensions()[1]; \
+    size_t n_cov = cov_bins.dimensions()[0]; \
+    size_t n_batches = 1; \
+    { size_t n_batch_dims = cov_vals.dimensions().size() - 1; \
+      for (size_t i = 0; i < n_batch_dims; ++i) n_batches *= cov_vals.dimensions()[i]; }
+
+#define DEFINE_REFINE_STEP(SUFFIX, FT, IT, f_t, i_t) \
+Error refine_step_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> source_values, Buffer<FT> xi, \
+    ResultBuffer<FT> out) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), source_values.typed_data(), \
+             xi.typed_data(), out->typed_data(), k, n_source, n_target, n_cov, n_batches); \
+    return Error::Success(); \
+} \
+XLA_FFI_DEFINE_HANDLER_SYMBOL( \
+    refine_step_ffi##SUFFIX, refine_step_ffi_impl##SUFFIX, \
+    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Ret<Buffer<FT>>()); \
+\
+Error refine_step_transpose_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> out_tangent, \
+    ResultBuffer<FT> source_values_tangent, ResultBuffer<FT> xi_tangent) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step_transpose<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step_transpose); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), out_tangent.typed_data(), \
+             source_values_tangent->typed_data(), xi_tangent->typed_data(), \
+             k, n_source, n_target, n_cov, n_batches); \
+    return Error::Success(); \
+} \
+XLA_FFI_DEFINE_HANDLER_SYMBOL( \
+    refine_step_transpose_ffi##SUFFIX, refine_step_transpose_ffi_impl##SUFFIX, \
+    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Ret<Buffer<FT>>().Ret<Buffer<FT>>()); \
+\
+Error refine_step_jvp_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> source_values, Buffer<FT> xi, \
+    Buffer<FT> cov_vals_tangent, Buffer<FT> source_values_tangent, Buffer<FT> xi_tangent, \
+    ResultBuffer<FT> out_tangent) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step_jvp<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step_jvp); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), source_values.typed_data(), \
+             xi.typed_data(), cov_vals_tangent.typed_data(), source_values_tangent.typed_data(), \
+             xi_tangent.typed_data(), out_tangent->typed_data(), k, n_source, n_target, n_cov, n_batches); \
+    return Error::Success(); \
+} \
+XLA_FFI_DEFINE_HANDLER_SYMBOL( \
+    refine_step_jvp_ffi##SUFFIX, refine_step_jvp_ffi_impl##SUFFIX, \
+    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Ret<Buffer<FT>>()); \
+\
+Error refine_step_vjp_ffi_impl##SUFFIX( \
+    cudaStream_t stream, Buffer<FT> source_points, Buffer<FT> target_points, Buffer<IT> neighbors, \
+    Buffer<IT> valid, Buffer<FT> cov_bins, Buffer<FT> cov_vals, Buffer<FT> source_values, Buffer<FT> xi, \
+    Buffer<FT> out_tangent, ResultBuffer<FT> cov_vals_tangent, ResultBuffer<FT> source_values_tangent, \
+    ResultBuffer<FT> xi_tangent) { \
+    GGP_STEP_SIZES \
+    decltype(&refine_step_vjp<1, 1, i_t, f_t>) dispatch = nullptr; \
+    DISPATCH_K_DIM(dispatch, refine_step_vjp); \
+    dispatch(stream, source_points.typed_data(), target_points.typed_data(), neighbors.typed_data(), \
+             valid.typed_data(), cov_bins.typed_data(), cov_vals.typed_data(), source_values.typed_data(), \
+             xi.typed_data(), out_tangent.typed_data(), cov_vals_tangent->typed_data(), \
+             source_values_tangent->typed_data(), xi_tangent->typed_data(), \
+             k, n_source, n_target, n_cov, n_batches); \
+    return Error::Success(); \
+} \
+XLA_FFI_DEFINE_HANDLER_SYMBOL( \
+    refine_step_vjp_ffi##SUFFIX, refine_step_vjp_ffi_impl##SUFFIX, \
+    Ffi::Bind().Ctx<PlatformStream<cudaStream_t>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<IT>>().Arg<Buffer<IT>>() \
+        .Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>().Arg<Buffer<FT>>() \
+        .Arg<Buffer<FT>>() \
+        .Ret<Buffer<FT>>().Ret<Buffer<FT>>().Ret<Buffer<FT>>());
+
+DEFINE_REFINE_STEP(_32, F32, S32, float, int32_t)
+DEFINE_REFINE_STEP(_64, F64, S64, double, int64_t)

@@ -291,3 +291,108 @@ def test_query_neighbors_radius(dtype):
             points, split_dims, query_indices, query_indices, jnp.full(query_indices.shape, jnp.inf, dtype=dtype), k=k
         )
         assert np.array_equal(np.asarray(inf), np.asarray(unbounded)), "infinite radius differs from query_neighbors"
+
+
+def _generate_by_steps(graph, cov_bins, cov_vals, xi_tree, pad=0):
+    """Generation in the graph's order as one ``graphgp_cuda.refine_step`` per level, optionally with every
+    level padded by ``pad`` invalid targets (neighbors -1, a point that coincides with itself k times)."""
+    import graphgp_cuda
+
+    dtype = graph.points.dtype
+    n0, k = int(graph.offsets[0]), graph.neighbors.shape[1]
+    initial = gp.generate_dense(graph.points[:n0], (cov_bins, cov_vals), xi_tree[:n0])
+    values = jnp.zeros(graph.points.shape[0], dtype).at[:n0].set(initial)
+    for start, end in zip(graph.offsets[:-1], graph.offsets[1:]):
+        start, end = int(start), int(end)
+        targets, neighbors, xi = graph.points[start:end], graph.neighbors[start - n0 : end - n0], xi_tree[start:end]
+        valid = None
+        if pad:
+            targets = jnp.concatenate([targets, jnp.zeros((pad, targets.shape[1]), dtype)])
+            neighbors = jnp.concatenate([neighbors, jnp.full((pad, k), -1, neighbors.dtype)])
+            xi = jnp.concatenate([xi, jnp.ones(pad, dtype)])
+            valid = jnp.arange(end - start + pad) < end - start
+        new = graphgp_cuda.refine_step(graph.points, values, targets, neighbors, xi, cov_bins, cov_vals, valid=valid)
+        values = values.at[start:end].set(new[: end - start])
+    return values
+
+
+def test_refine_step(setup_graph):
+    """``graphgp_cuda.refine_step`` applied level by level in the graph's order matches the pure JAX
+    generation, and its derivatives with respect to the excitations and the covariance values are the
+    transposes of each other (the kernel carries its own vjp)."""
+    graph, covariance, _points = setup_graph
+    dtype = graph.points.dtype
+    n = graph.points.shape[0]
+    xi = jr.normal(rng, (n,)).astype(dtype)
+    with jax.enable_x64(dtype == jnp.float64):
+        expected = gp.generate(graph, covariance, xi, cuda=False, fast_jit=False)[graph.indices]
+        xi_tree = xi[graph.indices]
+        cov_bins, cov_vals = covariance
+        run = lambda xi_tree, cov_vals: _generate_by_steps(graph, cov_bins, cov_vals, xi_tree)  # noqa: E731
+
+        values = jax.jit(run)(xi_tree, cov_vals)
+        assert jnp.allclose(values, expected, rtol=_rtol(dtype), atol=_atol(dtype))
+        v_xi = jr.normal(jr.key(1), xi.shape).astype(dtype)
+        v_cov = (jr.normal(jr.key(2), cov_vals.shape) * 1e-2).astype(dtype)
+        w = jr.normal(jr.key(3), (n,)).astype(dtype)
+        _, jv = jax.jvp(run, (xi_tree, cov_vals), (v_xi, v_cov))
+        _, vjp = jax.vjp(run, xi_tree, cov_vals)
+        ct_xi, ct_cov = vjp(w)
+        lhs, rhs = jnp.vdot(jv, w), jnp.vdot(v_xi, ct_xi) + jnp.vdot(v_cov, ct_cov)
+        assert jnp.allclose(lhs, rhs, rtol=100 * _rtol(dtype))
+
+
+def test_refine_step_padding(setup_graph):
+    """Targets with ``valid == 0`` return 0, are not factorized (their window is singular here) and leave
+    the values and the gradients of the others unchanged."""
+    import graphgp_cuda
+
+    graph, covariance, _points = setup_graph
+    dtype = graph.points.dtype
+    n, k = graph.points.shape[0], graph.neighbors.shape[1]
+    with jax.enable_x64(dtype == jnp.float64):
+        xi_tree = jr.normal(rng, (n,)).astype(dtype)[graph.indices]
+        cov_bins, cov_vals = covariance
+
+        targets = jnp.zeros((5, graph.points.shape[1]), dtype)
+        neighbors = jnp.full((5, k), -1, graph.neighbors.dtype)
+        out = graphgp_cuda.refine_step(
+            graph.points, jnp.ones(n, dtype), targets, neighbors, jnp.ones(5, dtype), cov_bins, cov_vals,
+            valid=jnp.zeros(5, bool),
+        )
+        assert jnp.all(out == 0)
+
+        def loss(xi_tree, cov_vals, pad):
+            return jnp.sum(jnp.sin(_generate_by_steps(graph, cov_bins, cov_vals, xi_tree, pad=pad)))
+
+        v0, g0 = jax.value_and_grad(loss, argnums=(0, 1))(xi_tree, cov_vals, 0)
+        v1, g1 = jax.value_and_grad(loss, argnums=(0, 1))(xi_tree, cov_vals, 7)
+        assert jnp.allclose(v1, v0, rtol=_rtol(dtype))
+        for a, b in zip(g1, g0):
+            assert jnp.all(jnp.isfinite(a))
+            assert jnp.allclose(a, b, rtol=100 * _rtol(dtype), atol=_atol(dtype))
+
+
+def test_refine_step_vmap(setup_graph):
+    """Batches of source values, excitations and covariance values (leading axis) match a Python loop."""
+    import graphgp_cuda
+
+    graph, covariance, _points = setup_graph
+    dtype = graph.points.dtype
+    n0 = int(graph.offsets[0])
+    start, end = int(graph.offsets[0]), int(graph.offsets[1])
+    with jax.enable_x64(dtype == jnp.float64):
+        cov_bins, cov_vals = covariance
+        source_values = jr.normal(jr.key(4), (3, graph.points.shape[0])).astype(dtype)
+        xi = jr.normal(jr.key(5), (3, end - start)).astype(dtype)
+        scale = jnp.array([1.0, 2.0, 0.5], dtype)
+
+        def step(source_values, xi, scale):
+            return graphgp_cuda.refine_step(
+                graph.points, source_values, graph.points[start:end], graph.neighbors[start - n0 : end - n0], xi,
+                cov_bins, scale * cov_vals,
+            )
+
+        batched = jax.vmap(step)(source_values, xi, scale)
+        looped = jnp.stack([step(source_values[i], xi[i], scale[i]) for i in range(3)])
+        assert jnp.allclose(batched, looped, rtol=_rtol(dtype), atol=_atol(dtype))
